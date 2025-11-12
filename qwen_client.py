@@ -9,7 +9,7 @@ class QwenClient:
     def __init__(self):
         self.api_key = APIConfig.QWEN_API_KEY
         self.model = APIConfig.QWEN_MODEL
-        self.base_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+        self.base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     
     def call_qwen(self, prompt: str, system_prompt: str = "") -> Dict[str, Any]:
         """调用Qwen API"""

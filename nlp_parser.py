@@ -14,7 +14,7 @@ class LLMParser:
         
         if result['success']:
             data = result['data']
-            print(f"[DEBUG] LLM解析结果: {data}")  # 调试输出
+            print(f"[DEBUG] LLM解析结果: {data}")
             
             # 将字符串意图类型转换为枚举
             intent_map = {
@@ -42,40 +42,59 @@ class LLMParser:
                 structured_response=result['raw_response']
             )
             
-            print(f"[DEBUG] 解析意图: {intent_type.value}, 置信度: {confidence}")  # 调试输出
+            print(f"[DEBUG] 解析意图: {intent_type.value}, 置信度: {confidence}")
             return parsed_intent
         else:
-            print(f"[DEBUG] LLM解析失败: {result.get('error', 'Unknown error')}")  # 调试输出
+            print(f"[DEBUG] LLM解析失败: {result.get('error', 'Unknown error')}")
             # LLM解析失败时的备用方案
             return self._fallback_parse(text)
     
     def _fallback_parse(self, text: str) -> ParsedIntent:
-        """备用解析方法"""
-        print(f"[DEBUG] 使用备用解析方法: {text}")  # 调试输出
+        """备用解析方法 - 修复确认操作识别"""
+        print(f"[DEBUG] 使用备用解析方法: {text}")
         
-        # 简单的关键词匹配
-        if any(keyword in text for keyword in ['添加', '新建', '安排', '创建', '会议', '讨论会', '约会']):
+        text_lower = text.lower()
+        
+        # 检查确认相关的关键词
+        if any(keyword in text_lower for keyword in ['确认', '确定', '是的', '好的', '对', '同意', '是']):
+            intent_type = IntentType.CONFIRM_ACTION
+            confidence = 0.9
+            entities = {'action': 'confirm', 'raw_text': text}
+        elif any(keyword in text_lower for keyword in ['取消', '不要', '不是', '否', '拒绝', '不']):
+            intent_type = IntentType.CANCEL_ACTION
+            confidence = 0.9
+            entities = {'action': 'cancel', 'raw_text': text}
+        elif any(keyword in text_lower for keyword in ['添加', '新建', '安排', '创建', '参加', '会议', '讨论会', '约会', '活动']):
             intent_type = IntentType.ADD_EVENT
             confidence = 0.8
-            
-            # 从文本中提取基本信息
             entities = {
                 'title': self._extract_title(text),
                 'location': self._extract_location(text),
                 'raw_text': text
             }
-        elif any(keyword in text for keyword in ['修改', '更新', '更改']):
+        elif any(keyword in text_lower for keyword in ['修改', '更新', '更改', '编辑', '调整']):
             intent_type = IntentType.MODIFY_EVENT
             confidence = 0.7
-        elif any(keyword in text for keyword in ['删除', '取消']):
+            entities = {'raw_text': text}
+        elif any(keyword in text_lower for keyword in ['删除', '移除']):
             intent_type = IntentType.DELETE_EVENT
             confidence = 0.7
-        elif any(keyword in text for keyword in ['帮助', '怎么用']):
+            entities = {'raw_text': text}
+        elif any(keyword in text_lower for keyword in ['帮助', '怎么用', '如何']):
             intent_type = IntentType.HELP
             confidence = 0.8
+            entities = {'raw_text': text}
+        elif any(keyword in text_lower for keyword in ['查询', '查看', '显示', '什么', '有']):
+            intent_type = IntentType.QUERY_EVENTS
+            confidence = 0.7
+            entities = {'raw_text': text}
+        elif any(keyword in text_lower for keyword in ['列表', '日程', '计划', '安排']):
+            intent_type = IntentType.LIST_EVENTS
+            confidence = 0.7
+            entities = {'raw_text': text}
         else:
             intent_type = IntentType.QUERY_EVENTS
-            confidence = 0.6
+            confidence = 0.5
             entities = {'raw_text': text}
         
         return ParsedIntent(
@@ -88,33 +107,25 @@ class LLMParser:
     
     def _extract_title(self, text: str) -> str:
         """从文本中提取标题"""
-        # 查找关键词后的文本
-        keywords = ['参加', '会议', '讨论会', '约会', '活动']
+        keywords = ['参加', '会议', '讨论会', '约会', '活动', '讲座', '培训']
         for keyword in keywords:
             if keyword in text:
                 start_idx = text.find(keyword) + len(keyword)
                 title = text[start_idx:].strip()
                 if title:
-                    return title
+                    return title.strip('在，。！？')
         return '未命名事件'
     
     def _extract_location(self, text: str) -> str:
         """从文本中提取地点"""
-        # 匹配 "在...教室" 或 "在...会议室" 等模式
         location_patterns = [
-            r'在(.+?)[教室|会议室|办公室|地点]',
-            r'于(.+?)[教室|会议室|办公室|地点]',
-            r'地点(.+?)[，。]',
+            r'在(.+?)[教室|会议室|办公室|地点|地方]',
+            r'于(.+?)[教室|会议室|办公室|地点|地方]',
         ]
         
         for pattern in location_patterns:
             match = re.search(pattern, text)
             if match:
                 return match.group(1).strip()
-        
-        # 简单匹配 "在..." 模式
-        match = re.search(r'在(.+?)[，。]', text)
-        if match:
-            return match.group(1).strip()
         
         return ''
