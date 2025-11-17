@@ -25,7 +25,10 @@ class LLMParser:
                 'list_events': IntentType.LIST_EVENTS,
                 'confirm_action': IntentType.CONFIRM_ACTION,
                 'cancel_action': IntentType.CANCEL_ACTION,
-                'help': IntentType.HELP
+                'help': IntentType.HELP,
+                # 🏋️ 新增训练计划意图
+                'create_workout_plan': IntentType.CREATE_WORKOUT_PLAN,
+                'delete_workout_plans': IntentType.DELETE_WORKOUT_PLANS
             }
             
             intent_type_str = data.get('intent_type', 'query_events')
@@ -54,9 +57,19 @@ class LLMParser:
         print(f"[DEBUG] 使用备用解析方法: {text}")
         
         text_lower = text.lower()
+
+        # 🏋️ 新增：训练计划相关意图识别
+        if any(keyword in text_lower for keyword in ['训练计划', '健身计划', '锻炼计划', '健身', '训练']):
+            intent_type = IntentType.CREATE_WORKOUT_PLAN
+            confidence = 0.8
+            entities = {'action': 'create_workout', 'raw_text': text}
+        elif any(keyword in text_lower for keyword in ['删除训练计划', '清除训练计划', '删除所有训练']):
+            intent_type = IntentType.DELETE_WORKOUT_PLANS
+            confidence = 0.9
+            entities = {'action': 'delete_workout_plans', 'raw_text': text}
         
         # 检查确认相关的关键词
-        if any(keyword in text_lower for keyword in ['确认', '确定', '是的', '好的', '对', '同意', '是']):
+        elif any(keyword in text_lower for keyword in ['确认', '确定', '是的', '好的', '对', '同意', '是']):
             intent_type = IntentType.CONFIRM_ACTION
             confidence = 0.9
             entities = {'action': 'confirm', 'raw_text': text}
