@@ -4,7 +4,7 @@ import json
 import datetime
 from typing import List, Optional, Dict
 from abc import ABC, abstractmethod
-from models import CalendarEvent
+from models import CalendarEvent, WorkoutPlan, UserProfile
 
 class SQLiteCalendar:
     def __init__(self, db_path: str = "calendar.db"):
@@ -30,6 +30,20 @@ class SQLiteCalendar:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # 🏋️ 新增：训练计划表
+        cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS workout_plans (
+                        id TEXT PRIMARY KEY,
+                        user_profile TEXT NOT NULL,
+                        plan_duration INTEGER NOT NULL,
+                        sessions_per_week INTEGER NOT NULL,
+                        session_duration INTEGER NOT NULL,
+                        workouts TEXT NOT NULL,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        start_date TEXT NOT NULL
+                    )
+                ''')
         
         conn.commit()
         conn.close()
@@ -198,3 +212,102 @@ class SQLiteCalendar:
                 print(f"解析事件失败 {row[0]}: {e}")
         
         return events
+
+    # 🏋️ 新增：训练计划相关方法
+    async def add_workout_plan(self, workout_plan: WorkoutPlan) -> bool:
+        """添加训练计划"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                INSERT INTO workout_plans 
+                (id, user_profile, plan_duration, sessions_per_week, session_duration, workouts, start_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                workout_plan.id,
+                json.dumps(workout_plan.user_profile.__dict__),
+                workout_plan.plan_duration,
+                workout_plan.sessions_per_week,
+                workout_plan.session_duration,
+                json.dumps(workout_plan.workouts),
+                workout_plan.start_date.isoformat()
+            ))
+
+            conn.commit()
+            conn.close()
+
+            print(f"[DEBUG] 训练计划已添加到数据库: {workout_plan.id}")
+            return True
+        except Exception as e:
+            print(f"[ERROR] 添加训练计划失败: {e}")
+            return False
+
+    async def get_workout_plans(self) -> List[WorkoutPlan]:
+        """获取所有训练计划"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute('SELECT * FROM workout_plans ORDER BY created_at DESC')
+            rows = cursor.fetchall()
+            conn.close()
+
+            workout_plans = []
+            for row in rows:
+                try:
+                    user_profile_data = json.loads(row[1])
+                    user_profile = UserProfile(**user_profile_data)
+
+                    workout_plan = WorkoutPlan(
+                        id=row[0],
+                        user_profile=user_profile,
+                        plan_duration=row[2],
+                        sessions_per_week=row[3],
+                        session_duration=row[4],
+                        workouts=json.loads(row[5]),
+                        created_at=datetime.datetime.fromisoformat(row[6]),
+                        start_date=datetime.datetime.fromisoformat(row[7])
+                    )
+                    workout_plans.append(workout_plan)
+                except Exception as e:
+                    print(f"[ERROR] 解析训练计划失败 {row[0]}: {e}")
+
+            return workout_plans
+        except Exception as e:
+            print(f"[ERROR] 获取训练计划失败: {e}")
+            return []
+
+    async def delete_workout_plans(self) -> bool:
+        """删除所有训练计划"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute('DELETE FROM workout_plans')
+            conn.commit()
+            conn.close()
+
+            print(f"[DEBUG] 所有训练计划已删除")
+            return True
+        except Exception as e:
+            print(f"[ERROR] 删除训练计划失败: {e}")
+            return False
+
+    async def delete_workout_events(self) -> int:
+        """删除所有训练事件"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute('DELETE FROM events WHERE title LIKE ?', ('%训练%',))
+            rows_affected = cursor.rowcount
+
+            conn.commit()
+            conn.close()
+
+            print(f"[DEBUG] 删除了 {rows_affected} 个训练事件")
+            return rows_affected
+        except Exception as e:
+            print(f"[ERROR] 删除训练事件失败: {e}")
+            return 0

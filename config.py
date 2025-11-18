@@ -2,7 +2,8 @@ class APIConfig:
     # LLM API配置
     # OPENAI_API_KEY = "openai-key"  # OpenAI GPT
     QWEN_API_KEY = "YOUR-QWEN-API-KEY"  # Qwen
-    QWEN_MODEL = "qwen-turbo"
+    #QWEN_MODEL = "qwen-turbo"
+    QWEN_MODEL = "qwen-plus"
     # CLAUDE_API_KEY = "claude-key"  # Claude
     
     # 日期解析API
@@ -12,7 +13,7 @@ class APIConfig:
     DB_CONNECTION_STRING = "sqlite:///calendar.db"
     
     # 日历同步API
-    GOOGLE_CALENDAR_API_KEY = "cfd5543e44290427888baf522a0ae89d26e6ec3a"
+    GOOGLE_CALENDAR_API_KEY = "your-google-calendar-key"
     # OUTLOOK_CALENDAR_API_KEY = "your-outlook-key"
 
     MAX_RETRIES = 3
