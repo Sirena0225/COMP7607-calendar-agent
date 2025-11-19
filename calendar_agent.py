@@ -8,6 +8,7 @@ from config import APIConfig
 from models import CalendarEvent, ParsedIntent, IntentType, UserProfile, WorkoutPlan
 from datetime import datetime, timedelta
 from google_calendar_sync import GoogleCalendarSync
+from conflict_resolver import ConflictResolver
 import os
 
 
@@ -18,6 +19,7 @@ class CalendarAgent:
         self.conversation_context = {}
         self.conversation_timeout = 30 * 60  # 30分钟超时
         self.last_interaction_time = None
+        self.conflict_resolver = ConflictResolver(calendar_interface)
 
         # 🏋️ 新增：训练计划生成器
         self.workout_generator = WorkoutPlanGenerator()
@@ -91,7 +93,7 @@ class CalendarAgent:
             # 🏋️ 修复：首先检查是否有待确认的训练计划
             if 'pending_workout_plan' in self.conversation_context:
                 # 检查用户输入是否是确认或取消
-                if user_input.strip() in ['确认', '确定', '是的', '好的', '是']:
+                if user_input.strip() in ['确认', '确定', '是的', '好的', '是', 'ok', 'yes', '添加', '接受']:
                     # 创建确认意图
                     confirm_intent = ParsedIntent(
                         intent_type=IntentType.CONFIRM_ACTION,
@@ -121,6 +123,7 @@ class CalendarAgent:
             print(f"[DEBUG] 实体信息: {parsed_intent.entities}")
 
             if parsed_intent.confidence < 0.3:
+                print(f"[DEBUG] process_input: Intent UNKNOWN or None, parsed={parsed_intent}")
                 return "抱歉，我没有理解您的意思。您可以告诉我需要添加、修改或查询日程。"
 
             response = await self.execute_intent(parsed_intent)
@@ -299,6 +302,40 @@ class CalendarAgent:
         # 找到唯一匹配的事件，准备修改
         target_event = matching_events[0]
 
+        # ===== 新增：在正式确认修改前进行冲突检测并可触发推荐流程 =====
+        # 计算目标新的事件对象（用于检测冲突）
+        candidate_new_start = new_start_time
+        candidate_new_end = new_end_time or (new_start_time + timedelta(hours=1))
+        candidate_event = CalendarEvent(
+            id=target_event.id,
+            title=target_event.title,
+            start_time=candidate_new_start,
+            end_time=candidate_new_end,
+            description=target_event.description,
+            location=target_event.location,
+            attendees=target_event.attendees
+        )
+
+        # 检查冲突（忽略当前被修改的事件本身冲突）
+        conflicts = await self.conflict_resolver.find_conflicting_events(candidate_event)
+        # 过滤掉自己（如果实现返回包含自身）
+        conflicts = [c for c in conflicts if c.id != target_event.id]
+
+        if conflicts:
+            # 存储上下文，进入推荐时间流程（与添加事件的流程保持一致）
+            self.conversation_context.update({
+                'pending_event': candidate_event,         # 待应用的新时间事件（暂不写入DB）
+                'modify_target': target_event,            # 原始要修改的事件
+                'conflicting_events': conflicts,
+                'original_start_time': candidate_new_start,
+                'pending_action': 'suggest_time'
+            })
+
+            fmt_time = candidate_new_start.strftime('%H:%M')
+            conflict_titles = [f"{e.title}" for e in conflicts]
+            return f"将事件修改到 {fmt_time} 与已有事项冲突：{', '.join(conflict_titles)}。是否需要我为您推荐合适时间？"
+
+        # ===== 无冲突：直接进入原有的确认流程 =====
         # 存储到上下文，等待用户确认
         self.conversation_context['event_to_modify'] = target_event
         self.conversation_context['new_start_time'] = new_start_time
@@ -368,7 +405,7 @@ class CalendarAgent:
         import re
 
         # 定义必须匹配的事件关键词
-        critical_keywords = ['会议', '讨论会', '研讨会', '约会', '活动', '讲座', '培训',
+        critical_keywords = ['会议', '讨论会', '研讨会', '约会', '活动', '讲座', '培训', '开会', '约会',
                              '上课', '课程', '考试', '面试', '面谈', '检查', '诊疗', '预约']
 
         # 🛠️ 修复：方法1 - 强制查找关键事件词
@@ -512,450 +549,349 @@ class CalendarAgent:
         return result
 
     async def handle_delete_event(self, parsed_intent: ParsedIntent) -> str:
-        """处理删除事件"""
-        print(f"[DEBUG] 处理删除事件，实体: {parsed_intent.entities}")
+        """处理删除事件请求：支持按'今天/明天/某天(22号/22日)'列出并选择删除，支持后续输入序号或'所有'直接完成删除"""
+        print(f"[DEBUG] 处理删除事件: {parsed_intent.original_text}")
 
-        original_text = parsed_intent.original_text.lower()
+        original_text = (parsed_intent.original_text or "").strip().lower()
+        entities = parsed_intent.entities or {}
 
-        # 🛠️ 修复：首先尝试匹配特定时间的事件
-        print(f"[DEBUG] 删除事件文本: {original_text}")
+        # 优先处理用户在列出后输入的选择（数字/所有/确认/取消）
+        if 'available_events' in self.conversation_context:
+            # 用户直接输入序号
+            if original_text.isdigit():
+                idx = int(original_text) - 1
+                available = self.conversation_context.get('available_events', [])
+                if 0 <= idx < len(available):
+                    target_event = available[idx]
+                    success = await self.calendar.delete_event(target_event.id)
 
-        # 🛠️ 修复：从文本中提取要删除事件的时间信息
-        delete_start_time, delete_end_time = self._extract_datetime_from_text(original_text)
-
-        if delete_start_time:
-            print(f"[DEBUG] 找到要删除的特定时间: {delete_start_time}")
-
-            # 查找该时间附近的事件
-            search_start = delete_start_time - timedelta(hours=2)
-            search_end = delete_start_time + timedelta(hours=2)
-
-            events_in_range = await self.calendar.list_events(search_start, search_end)
-            print(f"[DEBUG] 在时间范围内找到 {len(events_in_range)} 个事件")
-
-            if not events_in_range:
-                return f"在 {delete_start_time.strftime('%H:%M')} 附近没有找到事件。"
-
-            # 🛠️ 修复：智能匹配事件
-            matching_events = []
-            for event in events_in_range:
-                # 时间匹配（1小时内）
-                time_diff = abs((event.start_time - delete_start_time).total_seconds())
-                if time_diff < 3600:  # 1小时内
-                    matching_events.append(event)
-                    print(f"[DEBUG] 时间匹配事件: {event.title} at {event.start_time}")
-
-            if not matching_events:
-                # 如果没有精确时间匹配，显示所有事件让用户选择
-                event_list = f"在 {delete_start_time.strftime('%H:%M')} 附近找到以下事件：\n"
-                for i, event in enumerate(events_in_range, 1):
-                    event_list += f"{i}. {event.title} - {event.start_time.strftime('%H:%M')}\n"
-                event_list += "请选择要删除的事件编号，或输入'取消'："
-
-                self.conversation_context['available_events'] = events_in_range
-                self.conversation_context['pending_delete_action'] = True
-                return event_list
-
-            elif len(matching_events) == 1:
-                # 只有一个匹配事件，直接确认删除
-                target_event = matching_events[0]
-                self.conversation_context['event_to_delete'] = target_event
-
-                confirm_msg = f"确认删除事件吗？\n"
-                confirm_msg += f"事件: {target_event.title}\n"
-                confirm_msg += f"时间: {target_event.start_time.strftime('%m-%d %H:%M')}\n"
-                return confirm_msg + "请输入'确认'删除或'取消'。"
-
-            else:
-                # 多个匹配事件，让用户选择
-                event_list = "找到多个可能的事件：\n"
-                for i, event in enumerate(matching_events, 1):
-                    event_list += f"{i}. {event.title} - {event.start_time.strftime('%H:%M')}\n"
-                event_list += "请选择要删除的事件编号："
-
-                self.conversation_context['available_events'] = matching_events
-                self.conversation_context['pending_delete_action'] = True
-                return event_list
-
-        # 🛠️ 修复：原有的批量删除逻辑（当没有特定时间时）
-        elif '明天' in original_text and '所有' in original_text:
-            # 删除明天的所有事件
-            start_date = datetime.combine((datetime.now() + timedelta(days=1)).date(), datetime.min.time())
-            end_date = datetime.combine((datetime.now() + timedelta(days=1)).date(), datetime.max.time())
-
-            print(f"[DEBUG] 准备删除时间范围: {start_date} 到 {end_date}")
-
-            # 获取要删除的事件
-            events_to_delete = await self.calendar.list_events(start_date, end_date)
-
-            if not events_to_delete:
-                return "明天没有安排事件，无需删除。"
-
-            # 存储待删除的事件ID到上下文
-            self.conversation_context['events_to_delete'] = [event.id for event in events_to_delete]
-            self.conversation_context['delete_range'] = (start_date, end_date)
-
-            confirm_msg = f"找到 {len(events_to_delete)} 个明天的事件，确认删除所有吗？\n"
-            for i, event in enumerate(events_to_delete, 1):
-                confirm_msg += f"{i}. {event.title} - {event.start_time.strftime('%H:%M')}\n"
-
-            return confirm_msg + "\n请输入'确认'删除或'取消'。"
-
-        elif '明天' in original_text:
-            # 🛠️ 修复：当只说"明天"但没有特定时间时，显示事件列表让用户选择
-            start_date = datetime.combine((datetime.now() + timedelta(days=1)).date(), datetime.min.time())
-            end_date = datetime.combine((datetime.now() + timedelta(days=1)).date(), datetime.max.time())
-
-            events_to_delete = await self.calendar.list_events(start_date, end_date)
-
-            if not events_to_delete:
-                return "明天没有安排事件，无需删除。"
-
-            event_list = "明天有以下事件：\n"
-            for i, event in enumerate(events_to_delete, 1):
-                event_list += f"{i}. {event.title} - {event.start_time.strftime('%H:%M')}\n"
-            event_list += "请选择要删除的事件编号，或输入'所有'删除全部："
-
-            self.conversation_context['available_events'] = events_to_delete
-            self.conversation_context['pending_delete_action'] = True
-            return event_list
-
-        elif '今天' in original_text:
-            # 类似地修复今天的逻辑
-            start_date = datetime.combine(datetime.now().date(), datetime.min.time())
-            end_date = datetime.combine(datetime.now().date(), datetime.max.time())
-
-            events_to_delete = await self.calendar.list_events(start_date, end_date)
-
-            if not events_to_delete:
-                return "今天没有安排事件，无需删除。"
-
-            event_list = "今天有以下事件：\n"
-            for i, event in enumerate(events_to_delete, 1):
-                event_list += f"{i}. {event.title} - {event.start_time.strftime('%H:%M')}\n"
-            event_list += "请选择要删除的事件编号，或输入'所有'删除全部："
-
-            self.conversation_context['available_events'] = events_to_delete
-            self.conversation_context['pending_delete_action'] = True
-            return event_list
-
-        else:
-            # 🛠️ 修复：提供更明确的提示
-            return "请指定要删除的事件时间，例如：'删除明天下午3点的会议' 或 '删除明天的会议'。"
-
-    async def handle_confirm_action(self, parsed_intent: ParsedIntent) -> str:
-        """处理确认操作 - 完整版本"""
-        print(f"[DEBUG] 处理确认操作")
-
-        # 🏋️ 修复：处理训练计划确认
-        if 'pending_workout_plan' in self.conversation_context:
-            workout_plan = self.conversation_context['pending_workout_plan']
-
-            print(f"[DEBUG] 确认添加训练计划: {workout_plan.id}")
-
-            # 保存训练计划
-            success = await self.calendar.add_workout_plan(workout_plan)
-
-            if success:
-                # 将训练计划添加到日历
-                events_added = await self._add_workout_plan_to_calendar(workout_plan)
-
-                # 🏋️ 修复：标记对话完成
-                self.conversation_context['workout_plan_stage'] = 'completed'
-                self.conversation_context.pop('pending_workout_plan', None)
-                self.conversation_context.pop('user_profile', None)
-                self.conversation_context.pop('workout_plan_data', None)
-
-                return (f"✅ 训练计划已成功添加到日历！\n\n"
-                        f"📊 计划详情：\n"
-                        f"• 持续 {workout_plan.plan_duration} 周\n"
-                        f"• 每周训练 {workout_plan.sessions_per_week} 次\n"
-                        f"• 每次 {workout_plan.session_duration} 分钟\n"
-                        f"• 共添加了 {events_added} 个训练事件\n\n"
-                        f"💪 开始您的健身之旅吧！")
-            else:
-                return "❌ 添加训练计划失败，请重试。"
-
-        # 🛠️ 修复：处理事件选择确认（用户通过数字选择事件后确认）
-        if 'pending_modify_action' in self.conversation_context and self.conversation_context['pending_modify_action']:
-            print(f"[DEBUG] 处理事件选择确认流程")
-
-            # 检查用户是否已经选择了事件编号
-            if 'selected_event_index' in self.conversation_context:
-                event_index = self.conversation_context['selected_event_index']
-                available_events = self.conversation_context.get('available_events', [])
-                new_start_time, new_end_time = self.conversation_context.get('modify_new_time', (None, None))
-
-                print(f"[DEBUG] 事件索引: {event_index}, 可用事件数: {len(available_events)}")
-
-                if (0 <= event_index < len(available_events)) and new_start_time:
-                    target_event = available_events[event_index]
-
-                    # 确保结束时间合理
-                    if not new_end_time:
-                        new_end_time = new_start_time + timedelta(hours=1)
-
-                    print(
-                        f"[DEBUG] 准备修改事件: {target_event.title} 从 {target_event.start_time} 到 {new_start_time}")
-
-                    # 创建更新内容
-                    updates = {
-                        'start_time': new_start_time.isoformat(),
-                        'end_time': new_end_time.isoformat()
-                    }
-
-                    # 执行修改
-                    success = await self.calendar.modify_event(target_event.id, updates)
-
-                    # 清理上下文
-                    self.conversation_context.pop('pending_modify_action', None)
-                    self.conversation_context.pop('selected_event_index', None)
-                    self.conversation_context.pop('available_events', None)
-                    self.conversation_context.pop('modify_new_time', None)
+                    # 清理相关上下文
+                    for k in ['available_events', 'pending_delete_action', 'all_day_events_cache', 'events_to_delete', 'delete_range']:
+                        self.conversation_context.pop(k, None)
 
                     if success:
-                        # 如果Google Calendar同步启用，也同步更新
-                        if self.google_sync_enabled and self.google_calendar:
-                            # 重新创建事件对象用于同步
-                            updated_event = CalendarEvent(
-                                id=target_event.id,
-                                title=target_event.title,
-                                start_time=new_start_time,
-                                end_time=new_end_time,
-                                description=target_event.description,
-                                location=target_event.location,
-                                attendees=target_event.attendees
-                            )
-                            sync_success = self.google_calendar.sync_event_to_google(updated_event)
-                            if sync_success:
-                                print(f"✓ 事件已同步到Google Calendar")
-
-                        return f"事件 '{target_event.title}' 已成功修改到 {new_start_time.strftime('%Y-%m-%d %H:%M')}！"
+                        # 尝试同步到 Google Calendar（若启用）
+                        if getattr(self, 'google_sync_enabled', False) and getattr(self, 'google_calendar', None):
+                            try:
+                                await self.google_calendar.delete_event_from_google(target_event.id)
+                            except Exception:
+                                pass
+                        return f"已删除事件：{target_event.title}（{target_event.start_time.strftime('%m-%d %H:%M')}）。"
                     else:
-                        return "修改事件失败，请重试。"
+                        return "删除事件失败，请重试。"
                 else:
-                    return "事件选择无效，请重新操作。"
-            else:
-                return "请先选择要修改的事件编号。"
+                    return f"无效的选择，请输入1到{len(available)}之间的数字，或输入'所有'删除全部、'取消'退出。"
 
-        # 🛠️ 修复：处理数字选择事件（用户直接输入数字选择事件）
-        original_text = parsed_intent.original_text.strip()
+            # 用户输入'所有'或'全部' —— 直接删除当前展示的所有可选事件
+            if original_text in ['所有', '全部', 'all']:
+                all_events = self.conversation_context.get('all_day_events_cache') or self.conversation_context.get('available_events', [])
+                if not all_events:
+                    return "当前没有可以删除的事件。"
 
-        # 🛠️ 修复：处理数字选择删除事件
-        if original_text.isdigit() and 'available_events' in self.conversation_context:
-            print(f"[DEBUG] 处理数字事件选择: {original_text}")
+                success_count = 0
+                deleted_ids = []
+                for ev in all_events:
+                    ok = await self.calendar.delete_event(ev.id)
+                    if ok:
+                        success_count += 1
+                        deleted_ids.append(ev.id)
 
-            event_index = int(original_text) - 1  # 转换为0-based索引
-            available_events = self.conversation_context['available_events']
+                # 清理上下文
+                for k in ['available_events', 'pending_delete_action', 'all_day_events_cache', 'events_to_delete', 'delete_range']:
+                    self.conversation_context.pop(k, None)
 
-            if 0 <= event_index < len(available_events):
-                # 🛠️ 修复：区分修改和删除操作
-                if 'pending_modify_action' in self.conversation_context:
-                    # 修改操作
-                    target_event = available_events[event_index]
-                    new_start_time, new_end_time = self.conversation_context['modify_new_time']
+                # Google 同步
+                if getattr(self, 'google_sync_enabled', False) and getattr(self, 'google_calendar', None):
+                    for ev_id in deleted_ids:
+                        try:
+                            await self.google_calendar.delete_event_from_google(ev_id)
+                        except Exception:
+                            pass
 
-                    # 存储选择的事件索引，等待用户确认
-                    self.conversation_context['selected_event_index'] = event_index
+                return f"已删除 {success_count} 个事件。"
 
-                    confirm_msg = f"确认修改事件吗？\n"
-                    confirm_msg += f"原事件: {target_event.title} - {target_event.start_time.strftime('%m-%d %H:%M')}\n"
-                    confirm_msg += f"新时间: {new_start_time.strftime('%m-%d %H:%M')}"
-                    if new_end_time:
-                        confirm_msg += f" 到 {new_end_time.strftime('%H:%M')}\n"
+            # 用户在确认删除全部时输入确认
+            if original_text in ['确认', '确定', '是', 'yes'] and self.conversation_context.get('events_to_delete'):
+                ids = self.conversation_context.get('events_to_delete', [])
+                success_count = 0
+                for event_id in ids:
+                    ok = await self.calendar.delete_event(event_id)
+                    if ok:
+                        success_count += 1
+
+                # 清理上下文
+                for k in ['available_events', 'pending_delete_action', 'all_day_events_cache', 'events_to_delete', 'delete_range']:
+                    self.conversation_context.pop(k, None)
+
+                # Google 同步尝试（若启用）
+                if getattr(self, 'google_sync_enabled', False) and getattr(self, 'google_calendar', None):
+                    for ev_id in ids:
+                        try:
+                            await self.google_calendar.delete_event_from_google(ev_id)
+                        except Exception:
+                            pass
+
+                return f"已删除 {success_count} 个事件。"
+
+            # 用户取消删除
+            if original_text in ['取消', '不要', '不', 'exit', 'quit']:
+                for k in ['available_events', 'pending_delete_action', 'all_day_events_cache', 'events_to_delete', 'delete_range']:
+                    self.conversation_context.pop(k, None)
+                return "已取消删除操作。"
+
+        # --- 解析并确定目标日期（支持 today/tomorrow/22号/22日/ISO 日期） ---
+        target_day = None
+
+        # 优先使用解析器提取的实体（支持 parser._extract_day_time_from_text 返回的 'date'）
+        if 'date' in entities:
+            try:
+                target_day = datetime.fromisoformat(entities['date']).date()
+            except Exception:
+                pass
+
+        # 支持 day_of_month 实体（仅日） -> 推断本月或下月
+        if target_day is None and 'day_of_month' in entities:
+            day = int(entities['day_of_month'])
+            today = datetime.now().date()
+            year = today.year
+            month = today.month
+            try:
+                candidate = date(year, month, day)
+                if candidate < today:
+                    if month == 12:
+                        candidate = date(year + 1, 1, day)
                     else:
-                        confirm_msg += f" 到 {(new_start_time + timedelta(hours=1)).strftime('%H:%M')}\n"
+                        candidate = date(year, month + 1, day)
+            except Exception:
+                # 容错：若当月无该日，尝试下个月（限制到28日以避免无效日期）
+                if month == 12:
+                    candidate = date(year + 1, 1, min(day, 28))
+                else:
+                    candidate = date(year, month + 1, min(day, 28))
+            target_day = candidate
 
-                    return confirm_msg + "请输入'确认'修改或'取消'。"
+        # 兼容自然语言中的“明天/今天”
+        if target_day is None:
+            if '明天' in original_text:
+                target_day = datetime.now().date() + timedelta(days=1)
+            elif '今天' in original_text:
+                target_day = datetime.now().date()
 
-                elif 'pending_delete_action' in self.conversation_context:
-                    # 🛠️ 新增：删除操作
-                    target_event = available_events[event_index]
-                    self.conversation_context['event_to_delete'] = target_event
+        # 如果还是没有日期，提示并等待用户提供（保留原提示）
+        if target_day is None:
+            return "请指定要删除事件的日期，例如：'删除明天的会议' 或 '删除今天的所有事件'。"
 
-                    confirm_msg = f"确认删除事件吗？\n"
-                    confirm_msg += f"事件: {target_event.title}\n"
-                    confirm_msg += f"时间: {target_event.start_time.strftime('%m-%d %H:%M')}\n"
-                    confirm_msg += "请输入'确认'删除或'取消'。"
+        # 构建当天时间范围并列出事件
+        start_date = datetime.combine(target_day, datetime.min.time())
+        end_date = datetime.combine(target_day, datetime.max.time())
 
-                    return confirm_msg
-            else:
-                return f"无效的选择，请输入1到{len(available_events)}之间的数字。"
+        events_to_delete = await self.calendar.list_events(start_date, end_date)
+        if not events_to_delete:
+            return f"{target_day.strftime('%m-%d')} 没有安排事件，无需删除。"
 
-        # 检查是否有待修改的事件（直接匹配的情况）
-        if 'event_to_modify' in self.conversation_context:
-            target_event = self.conversation_context['event_to_modify']
-            new_start_time = self.conversation_context['new_start_time']
-            new_end_time = self.conversation_context['new_end_time']
+        # 如果用户在一句话里包含 '所有' 或 '全部'（首次请求），则询问确认删除全部
+        if any(k in original_text for k in ['所有', '全部']) or entities.get('delete_all'):
+            # 存储将要删除的事件ID列表，等待用户确认
+            self.conversation_context['events_to_delete'] = [e.id for e in events_to_delete]
+            self.conversation_context['delete_range'] = (start_date, end_date)
+            self.conversation_context['pending_delete_action'] = True
+            self.conversation_context['available_events'] = events_to_delete
+            return (f"{target_day.strftime('%m-%d')} 有 {len(events_to_delete)} 个事件，是否确认删除全部？"
+                    " 请输入 '确认' 删除或 '取消'。")
 
-            print(f"[DEBUG] 修改事件: {target_event.title} 从 {target_event.start_time} 到 {new_start_time}")
+        # 否则根据是否提到'下午/上午/晚上/中午'来过滤事件并展示可选项
+        time_period = self._extract_time_period(original_text)
+        filtered = self._filter_events_by_time_period(events_to_delete, time_period)
 
-            # 创建更新内容
-            updates = {
-                'start_time': new_start_time.isoformat(),
-                'end_time': new_end_time.isoformat()
-            }
+        # 如果过滤后为空，回退显示全部以便用户选择
+        display_events = filtered if filtered else events_to_delete
 
-            # 执行修改
-            success = await self.calendar.modify_event(target_event.id, updates)
+        # 构造可选列表
+        event_list = f"{target_day.strftime('%m-%d')} 有以下事件：\n"
+        for i, event in enumerate(display_events, 1):
+            event_list += f"{i}. {event.title} - {event.start_time.strftime('%H:%M')}\n"
+        event_list += "请选择要删除的事件编号，或输入'所有'删除全部："
 
-            if success:
-                # 清除上下文
-                self.conversation_context.pop('event_to_modify', None)
-                self.conversation_context.pop('new_start_time', None)
-                self.conversation_context.pop('new_end_time', None)
+        # 存储上下文：用于后续数字选择/确认删除
+        self.conversation_context['available_events'] = display_events
+        self.conversation_context['pending_delete_action'] = True
+        # 保留原始完整事件集合以便'所有'删除时使用
+        self.conversation_context['all_day_events_cache'] = events_to_delete
+        return event_list
 
-                # 如果Google Calendar同步启用，也同步更新
-                if self.google_sync_enabled and self.google_calendar:
-                    # 重新创建事件对象用于同步
-                    updated_event = CalendarEvent(
-                        id=target_event.id,
-                        title=target_event.title,
-                        start_time=new_start_time,
-                        end_time=new_end_time,
-                        description=target_event.description,
-                        location=target_event.location,
-                        attendees=target_event.attendees
-                    )
-                    sync_success = self.google_calendar.sync_event_to_google(updated_event)
-                    if sync_success:
-                        print(f"✓ 事件已同步到Google Calendar")
+    async def handle_confirm_action(self, parsed_intent: ParsedIntent) -> str:
+        """处理确认操作 - 完整版本（合并冲突推荐逻辑）"""
+        print(f"[DEBUG] 处理确认操作")
 
-                return f"事件 '{target_event.title}' 已成功修改到 {new_start_time.strftime('%Y-%m-%d %H:%M')}！"
-            else:
-                return "修改事件失败，请重试。"
+        # ✅ 新增：优先处理冲突推荐流程
+        action = self.conversation_context.get('pending_action')
+        user_input = parsed_intent.original_text.strip()
 
-        # 🛠️ 修复：处理单个事件删除
-        if 'event_to_delete' in self.conversation_context:
-            target_event = self.conversation_context['event_to_delete']
-            success = await self.calendar.delete_event(target_event.id)
+        # 从 suggest_time 开始：用户同意推荐
+        if action == 'suggest_time' and user_input in ['是', '确认', '好的', '对', 'yes', '接受', '可以']:
+            pending_event = self.conversation_context.get('pending_event')
+            original_start = self.conversation_context.get('original_start_time')
+            if not pending_event or not original_start:
+                return "推荐时间已失效，请重新添加或修改事件。"
 
-            # 清理上下文
-            self.conversation_context.pop('event_to_delete', None)
-            self.conversation_context.pop('available_events', None)
-            self.conversation_context.pop('pending_delete_action', None)
+            suggestions = await self.conflict_resolver.suggest_alternative_times(pending_event, original_start)
+            if not suggestions:
+                return "暂时没有合适的时间推荐，请稍后重试。"
 
-            if success:
-                # 如果Google Calendar同步启用，也同步删除
-                if self.google_sync_enabled and self.google_calendar:
-                    # 这里需要实现Google Calendar的删除同步
-                    print(f"[DEBUG] Google Calendar删除同步待实现")
+            # 存储推荐并切换到 review_suggestion 流程
+            self.conversation_context.update({
+                'time_suggestions': suggestions,
+                'suggestion_idx': 0,
+                'pending_action': 'review_suggestion'
+            })
 
-                return f"事件 '{target_event.title}' 已成功删除！"
-            else:
-                return "删除事件失败，请重试。"
+            first_time = suggestions[0]
+            event_title = pending_event.title or "会议"
+            msg = f"为您推荐合适的日程安排：\n{first_time.strftime('%m-%d %H:%M')} 事件：{event_title}。\n是否接受该时间？"
+            return msg
 
-        # 检查是否有待删除的事件（批量删除）
-        elif 'events_to_delete' in self.conversation_context:
-            event_ids = self.conversation_context['events_to_delete']
-            delete_range = self.conversation_context['delete_range']
+        # review_suggestion：用户要求重新推荐/换一个
+        if action == 'review_suggestion' and user_input in ['重新推荐', '换一个', '下一个', '不要']:
+            idx = self.conversation_context.get('suggestion_idx', 0)
+            suggestions = self.conversation_context.get('time_suggestions', [])
+            if not suggestions:
+                return "无更多推荐时间。"
 
-            success_count = 0
-            for event_id in event_ids:
-                success = await self.calendar.delete_event(event_id)
+            next_idx = (idx + 1) % len(suggestions)
+            self.conversation_context['suggestion_idx'] = next_idx
+
+            selected_time = suggestions[next_idx]
+            event_title = self.conversation_context.get('pending_event').title or "会议"
+            return f"为您推荐合适的日程安排：\n{selected_time.strftime('%m-%d %H:%M')} 事件：{event_title}。\n是否接受该时间？"
+
+        # review_suggestion：用户确认某个推荐时间 -> 对应添加或修改
+        if action == 'review_suggestion' and user_input in ['是', '确认', '添加', '接受']:
+            idx = self.conversation_context.get('suggestion_idx', 0)
+            suggestions = self.conversation_context.get('time_suggestions', [])
+            if not suggestions:
+                return "推荐时间已失效，请重新操作。"
+
+            selected_time = suggestions[idx]
+            pending_event = self.conversation_context.get('pending_event')
+            if not pending_event:
+                return "待处理事件已失效，请重新操作。"
+
+            # 计算新的结束时间
+            duration = pending_event.end_time - pending_event.start_time
+            new_start = selected_time
+            new_end = selected_time + duration
+
+            # 区分添加还是修改（修改流程会有 'modify_target'）
+            modify_target = self.conversation_context.get('modify_target')
+            if modify_target:
+                # 执行修改：通过 calendar.modify_event 更新原事件
+                updates = {
+                    'start_time': new_start.isoformat(),
+                    'end_time': new_end.isoformat()
+                }
+                success = await self.calendar.modify_event(modify_target.id, updates)
+
+                # 清理推荐相关上下文及 modify 标志
+                for k in ['pending_event', 'conflicting_events', 'original_start_time',
+                          'time_suggestions', 'suggestion_idx', 'pending_action', 'modify_target']:
+                    self.conversation_context.pop(k, None)
+
                 if success:
-                    success_count += 1
+                    # 同步 Google Calendar（如有）
+                    if getattr(self, 'google_sync_enabled', False) and getattr(self, 'google_calendar', None):
+                        try:
+                            # 创建更新后的事件对象用于同步
+                            updated_event = CalendarEvent(
+                                id=modify_target.id,
+                                title=modify_target.title,
+                                start_time=new_start,
+                                end_time=new_end,
+                                description=getattr(modify_target, 'description', None),
+                                location=getattr(modify_target, 'location', None),
+                                attendees=getattr(modify_target, 'attendees', None)
+                            )
+                            await self.google_calendar.sync_event_to_google(updated_event)
+                        except Exception:
+                            pass
 
-            # 清除上下文
-            self.conversation_context.pop('events_to_delete', None)
-            self.conversation_context.pop('delete_range', None)
+                    return "已成功修改事件到推荐时间！"
+                else:
+                    return "修改事件失败，请重试。"
+            else:
+                # 添加流程：生成真实ID并写入数据库
+                pending_event.start_time = new_start
+                pending_event.end_time = new_end
+                pending_event.id = str(uuid4())
 
-            return f"成功删除 {success_count} 个事件。"
-
-        # 检查是否有待添加的事件
-        elif 'pending_event' in self.conversation_context:
-            pending_event = self.conversation_context['pending_event']
-            action = self.conversation_context.get('pending_action')
-
-            print(f"[DEBUG] 待确认操作: {action}")
-            print(f"[DEBUG] 待确认事件: {pending_event.title} at {pending_event.start_time}")
-
-            if action == 'add':
                 success = await self.calendar.add_event(pending_event)
+
+                # 清理推荐相关上下文
+                for k in ['pending_event', 'conflicting_events', 'original_start_time',
+                          'time_suggestions', 'suggestion_idx', 'pending_action']:
+                    self.conversation_context.pop(k, None)
+
                 if success:
-                    # 如果Google Calendar同步启用，也同步到Google
-                    if self.google_sync_enabled and self.google_calendar:
-                        sync_success = self.google_calendar.sync_event_to_google(pending_event)
-                        if sync_success:
-                            print(f"✓ 事件已同步到Google Calendar")
+                    # 同步 Google Calendar（如有）
+                    if getattr(self, 'google_sync_enabled', False) and getattr(self, 'google_calendar', None):
+                        try:
+                            await self.google_calendar.sync_event_to_google(pending_event)
+                        except Exception:
+                            pass
 
-                    # 清除上下文
-                    self.conversation_context.pop('pending_event', None)
-                    self.conversation_context.pop('pending_action', None)
-
-                    return f"事件 '{pending_event.title}' 已成功添加！"
+                    return "已成功添加事件（使用推荐时间）！"
                 else:
                     return "添加事件失败，请重试。"
-
-        # 处理待处理的添加事件意图（当时间信息不完整时）
-        elif 'pending_action' in self.conversation_context and self.conversation_context[
-            'pending_action'] == 'add_event':
-            pending_intent = self.conversation_context.get('pending_intent')
-            if pending_intent:
-                # 重新尝试处理添加事件
-                self.conversation_context.pop('pending_action', None)
-                self.conversation_context.pop('pending_intent', None)
-                return await self.handle_add_event(pending_intent)
-            else:
-                return "请重新输入事件信息，我会尝试再次解析。"
-
-        # 清理所有未完成的上下文
-        else:
-            # 清理可能残留的上下文
-            keys_to_remove = [
-                'pending_modify_action', 'selected_event_index', 'available_events',
-                'modify_new_time', 'pending_event', 'pending_action', 'pending_intent',
-                'event_to_modify', 'new_start_time', 'new_end_time', 'events_to_delete',
-                'delete_range', 'event_to_delete', 'pending_delete_action',
-                # 🏋️ 新增：训练计划相关上下文
-                'workout_plan_stage', 'workout_plan_data'
-            ]
-            for key in keys_to_remove:
-                self.conversation_context.pop(key, None)
-
-            return "没有待确认的操作。如果您之前有未完成的操作，请重新开始。"
-
+    
     async def handle_add_event(self, parsed_intent: ParsedIntent) -> str:
-        """处理添加事件 - 完全使用本地时间解析"""
+        """处理添加事件 - 新增冲突检测逻辑"""
         print(f"[DEBUG] 处理添加事件，实体: {parsed_intent.entities}")
-
         entities = parsed_intent.entities
-
-        # 🛠️ 修复：完全忽略LLM返回的时间，只使用本地解析
-        title = entities.get('title', self._extract_title_from_text(parsed_intent.original_text))
-        location = entities.get('location', self._extract_location_from_text(parsed_intent.original_text))
+        
+        # 提取信息（使用现有逻辑）
+        title = entities.get('title') or self._extract_title_from_text(parsed_intent.original_text)
+        location = entities.get('location') or self._extract_location_from_text(parsed_intent.original_text)
         description = entities.get('description', '')
-
-        # 完全使用本地时间解析，不信任LLM返回的时间
+        
         start_time, end_time = self._extract_datetime_from_text(parsed_intent.original_text)
-
-        print(f"[DEBUG] 本地解析结果 - 开始: {start_time}, 结束: {end_time}")
-
         if not start_time:
             self.conversation_context['pending_intent'] = parsed_intent
             self.conversation_context['pending_action'] = 'add_event'
             return f"请告诉我事件的具体时间，例如：'明天下午3点'。当前解析的标题是：{title}"
-
+        
         if not end_time:
             end_time = start_time + timedelta(hours=1)
-
-        # 创建事件
-        event = CalendarEvent(
-            id=str(uuid4()),
-            title=title,
-            start_time=start_time,
-            end_time=end_time,
-            description=description,
-            location=location
+        
+        # ✅ 新增：检查冲突
+        new_event = CalendarEvent(
+            id="temp", title=title, start_time=start_time, end_time=end_time
         )
-
-        # 询问确认
-        confirm_msg = f"即将添加事件：\n标题：{event.title}\n时间：{event.start_time.strftime('%Y-%m-%d %H:%M')}\n地点：{event.location}\n确认吗？"
-
-        self.conversation_context['pending_event'] = event
-        self.conversation_context['pending_action'] = 'add'
-
-        return confirm_msg
+        conflicts = await self.conflict_resolver.find_conflicting_events(new_event)
+        
+        if conflicts:
+            # 存储上下文，准备推荐
+            self.conversation_context.update({
+                'pending_event': new_event,
+                'conflicting_events': conflicts,
+                'original_start_time': start_time,
+                'pending_action': 'suggest_time'
+            })
+            
+            # 构造用户友好的冲突提示
+            fmt_time = start_time.strftime('%H:%M')
+            conflict_titles = [f"{e.title}" for e in conflicts]
+            conflict_msg = f"明天下午{fmt_time}您已有事项：{', '.join(conflict_titles)}，是否需要为您推荐合适时间？"
+            return conflict_msg
+        
+        # 无冲突：走原有逻辑
+        event = CalendarEvent(
+            id=str(uuid4()), title=title, start_time=start_time, end_time=end_time,
+            description=description, location=location
+        )
+        self.conversation_context.update({
+            'pending_event': event,
+            'pending_action': 'add'
+        })
+        return f"即将添加事件：\n标题：{event.title}\n时间：{event.start_time.strftime('%Y-%m-%d %H:%M')}\n地点：{event.location}\n确认吗？"
 
     async def handle_query_events(self, parsed_intent: ParsedIntent) -> str:
         """处理查询事件"""
@@ -1337,8 +1273,18 @@ class CalendarAgent:
         raise ValueError(f"无法解析时间字符串: {datetime_str}")
 
     async def handle_cancel_action(self, parsed_intent: ParsedIntent) -> str:
-        """处理取消操作"""
+        """处理取消操作（合并：支持取消时间推荐）"""
         print(f"[DEBUG] 处理取消操作")
+
+        # ✅ 新增：如果当前是冲突推荐流程，单独清理并返回友好提示
+        action = self.conversation_context.get('pending_action')
+        if action in ['suggest_time', 'review_suggestion']:
+            # 仅清理与推荐相关的上下文，保留其他对话（如训练计划收集）
+            keys = ['pending_event', 'conflicting_events', 'original_start_time',
+                    'time_suggestions', 'suggestion_idx', 'pending_action', 'modify_target']
+            for k in keys:
+                self.conversation_context.pop(k, None)
+            return "已取消时间推荐。"
 
         # 🏋️ 修复：如果有待确认的训练计划，取消它
         if 'pending_workout_plan' in self.conversation_context:
