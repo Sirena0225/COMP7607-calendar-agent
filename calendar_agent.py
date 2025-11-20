@@ -1,4 +1,3 @@
-import asyncio
 import re
 from uuid import uuid4
 from typing import Callable, Optional
@@ -7,7 +6,6 @@ from database import SQLiteCalendar
 from config import APIConfig
 from models import CalendarEvent, ParsedIntent, IntentType, UserProfile, WorkoutPlan
 from datetime import datetime, timedelta
-from google_calendar_sync import GoogleCalendarSync
 import os
 from conflict_resolver import ConflictResolver
 
@@ -19,6 +17,8 @@ class CalendarAgent:
         self.conversation_context = {}
         self.conversation_timeout = 30 * 60  # 30分钟超时
         self.last_interaction_time = None
+        self.google_calendar = None
+        self.google_sync_enabled = False
 
         # 🏋️ 新增：训练计划生成器
         self.workout_generator = WorkoutPlanGenerator()
@@ -29,8 +29,6 @@ class CalendarAgent:
         # 🛠️ 修复：先初始化基础组件，再初始化Google Calendar
         print("初始化基础组件...")
 
-        # 延迟初始化Google Calendar，确保其他组件先就绪
-        self._initialize_google_calendar()
 
     def _cleanup_expired_conversation(self):
         """清理过期的对话上下文"""
@@ -45,45 +43,6 @@ class CalendarAgent:
         """检查是否在训练计划对话中"""
         return ('workout_plan_stage' in self.conversation_context and
                 self.conversation_context['workout_plan_stage'] not in ['completed', 'confirmation'])
-
-    def _initialize_google_calendar(self):
-        """单独初始化Google Calendar同步"""
-        print("初始化Google Calendar同步...")
-
-        try:
-            # 先检查配置是否存在
-            config_file = 'google-calendar-api.json'
-            env_var = os.getenv('GOOGLE_CALENDAR_CREDENTIALS_JSON')
-
-            print(f"[DEBUG] 检查Google Calendar配置:")
-            print(f"  - 环境变量: {'已设置' if env_var else '未设置'}")
-            print(f"  - 配置文件: {'存在' if os.path.exists(config_file) else '不存在'}")
-
-            if env_var or os.path.exists(config_file):
-                from google_calendar_sync import GoogleCalendarSync
-                self.google_calendar = GoogleCalendarSync()
-                self.google_sync_enabled = self.google_calendar.is_available()
-
-                if self.google_sync_enabled:
-                    print("✓ Google Calendar同步已启用")
-                else:
-                    print("⚠ Google Calendar服务初始化失败")
-            else:
-                self.google_calendar = None
-                self.google_sync_enabled = False
-                print("⚠ Google Calendar同步未配置")
-
-        except ImportError as e:
-            self.google_calendar = None
-            self.google_sync_enabled = False
-            print(f"⚠ Google Calendar依赖缺失: {e}")
-            print("  请运行: pip install google-auth google-api-python-client")
-        except Exception as e:
-            self.google_calendar = None
-            self.google_sync_enabled = False
-            print(f"⚠ Google Calendar初始化异常: {e}")
-            import traceback
-            traceback.print_exc()
 
     async def process_input(self, user_input: str) -> str:
         """处理用户输入"""

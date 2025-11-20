@@ -1,4 +1,3 @@
-
 import json
 import os
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -24,21 +23,10 @@ app.add_middleware(
 )
 
 
-# 谷歌日历配置（原有函数保留）
-def setup_google_calendar():
-    config_file = 'google-calendar-api.json'
-    if os.path.exists(config_file):
-        print(f"✓ 找到Google Calendar配置文件: {os.path.abspath(config_file)}")
-    else:
-        print(f"⚠ 未找到配置文件: {config_file}")
-    os.environ['GOOGLE_CALENDAR_CREDENTIALS_FILE'] = os.path.abspath(config_file)
-
-
 # 挂载静态文件目录（存放前端HTML/CSS/JS）
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 初始化日历组件
-setup_google_calendar()
 calendar_db = SQLiteCalendar()
 agent = CalendarAgent(calendar_interface=calendar_db)
 

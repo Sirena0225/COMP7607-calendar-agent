@@ -2,7 +2,7 @@
 
 ## Calendar Agent
 
-一个基于LLM的日历管理助手，支持自然语言交互来管理日程安排，可同步到Google Calendar。
+一个基于LLM的日历管理助手，支持自然语言交互来管理日程安排。
 
 ### 项目结构
 calendar_agent/<br>
@@ -13,12 +13,11 @@ calendar_agent/<br>
 ├── nlp_parser.py    # LLM驱动的解析器<br>
 ├── qwen_client.py     # Qwen API客户端 也可以换用其他llm 记得同时改config.py<br>
 ├── calendar_agent.py    # 核心Agent 语义识别问答<br>
-├── calendar_config.py   # 调用Google日历api<br>
-├── google_calendar_sync.py   # 启用Google日历同步<br>
 ├── calendar.db  # 日历数据库<br>
 ├── check_database.py  # 可以单独运行此py文件查询数据库内容<br>
-├── conflict_resolved.py   # 当用户新增事件时间冲突时，为用户推荐其他时间
+├── conflict_resolved.py   # 当用户新增事件时间冲突时，为用户推荐其他时间<br>
 ├── debug-api.py  # 暂未使用<br>
+### 移除了google日历部分
 
 
 ### 更改
