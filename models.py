@@ -16,6 +16,7 @@ class CalendarEvent:
     attendees: List[str] = None
     reminder_minutes: int = 15
     recurrence: str = None
+    has_conflict: bool = False  # 🛠️ 新增：冲突标记
 
     def to_dict(self):
         return {
@@ -27,7 +28,8 @@ class CalendarEvent:
             'location': self.location,
             'attendees': self.attendees or [],
             'reminder_minutes': self.reminder_minutes,
-            'recurrence': self.recurrence
+            'recurrence': self.recurrence,
+            'has_conflict': self.has_conflict  # 🛠️ 新增
         }
 
 class IntentType(Enum):

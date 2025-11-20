@@ -11,10 +11,6 @@ class APIConfig:
     
     # 数据库连接
     DB_CONNECTION_STRING = "sqlite:///calendar.db"
-    
-    # 日历同步API
-    GOOGLE_CALENDAR_API_KEY = "your-google-calendar-key"
-    # OUTLOOK_CALENDAR_API_KEY = "your-outlook-key"
 
     MAX_RETRIES = 3
     TIMEOUT = 30 

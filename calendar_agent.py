@@ -1,4 +1,3 @@
-import asyncio
 import re
 from uuid import uuid4
 from typing import Callable, Optional
@@ -7,8 +6,8 @@ from database import SQLiteCalendar
 from config import APIConfig
 from models import CalendarEvent, ParsedIntent, IntentType, UserProfile, WorkoutPlan
 from datetime import datetime, timedelta
-from google_calendar_sync import GoogleCalendarSync
 import os
+from conflict_resolver import ConflictResolver
 
 
 class CalendarAgent:
@@ -18,15 +17,18 @@ class CalendarAgent:
         self.conversation_context = {}
         self.conversation_timeout = 30 * 60  # 30分钟超时
         self.last_interaction_time = None
+        self.google_calendar = None
+        self.google_sync_enabled = False
 
         # 🏋️ 新增：训练计划生成器
         self.workout_generator = WorkoutPlanGenerator()
 
+        # 🛠️ 新增：冲突解析器
+        self.conflict_resolver = ConflictResolver(calendar_interface)
+
         # 🛠️ 修复：先初始化基础组件，再初始化Google Calendar
         print("初始化基础组件...")
 
-        # 延迟初始化Google Calendar，确保其他组件先就绪
-        self._initialize_google_calendar()
 
     def _cleanup_expired_conversation(self):
         """清理过期的对话上下文"""
@@ -41,45 +43,6 @@ class CalendarAgent:
         """检查是否在训练计划对话中"""
         return ('workout_plan_stage' in self.conversation_context and
                 self.conversation_context['workout_plan_stage'] not in ['completed', 'confirmation'])
-
-    def _initialize_google_calendar(self):
-        """单独初始化Google Calendar同步"""
-        print("初始化Google Calendar同步...")
-
-        try:
-            # 先检查配置是否存在
-            config_file = 'google-calendar-api.json'
-            env_var = os.getenv('GOOGLE_CALENDAR_CREDENTIALS_JSON')
-
-            print(f"[DEBUG] 检查Google Calendar配置:")
-            print(f"  - 环境变量: {'已设置' if env_var else '未设置'}")
-            print(f"  - 配置文件: {'存在' if os.path.exists(config_file) else '不存在'}")
-
-            if env_var or os.path.exists(config_file):
-                from google_calendar_sync import GoogleCalendarSync
-                self.google_calendar = GoogleCalendarSync()
-                self.google_sync_enabled = self.google_calendar.is_available()
-
-                if self.google_sync_enabled:
-                    print("✓ Google Calendar同步已启用")
-                else:
-                    print("⚠ Google Calendar服务初始化失败")
-            else:
-                self.google_calendar = None
-                self.google_sync_enabled = False
-                print("⚠ Google Calendar同步未配置")
-
-        except ImportError as e:
-            self.google_calendar = None
-            self.google_sync_enabled = False
-            print(f"⚠ Google Calendar依赖缺失: {e}")
-            print("  请运行: pip install google-auth google-api-python-client")
-        except Exception as e:
-            self.google_calendar = None
-            self.google_sync_enabled = False
-            print(f"⚠ Google Calendar初始化异常: {e}")
-            import traceback
-            traceback.print_exc()
 
     async def process_input(self, user_input: str) -> str:
         """处理用户输入"""
@@ -110,15 +73,27 @@ class CalendarAgent:
                     )
                     return await self.handle_cancel_action(cancel_intent)
 
+
             # 🏋️ 修复：首先检查是否在训练计划对话中
             if self._is_in_workout_plan_conversation():
                 print(f"[DEBUG] 在训练计划对话中，直接继续对话")
                 return await self._continue_workout_plan_conversation_directly(user_input)
 
             parsed_intent = self.nlp_parser.parse(user_input)
-
+            # 如果用户只输入数字且存在可选事件列表，将其视为确认/选择操作（用于选择要删除/修改的事件）
+            if user_input.strip().isdigit() and 'available_events' in self.conversation_context:
+                parsed_intent = ParsedIntent(
+                    intent_type=IntentType.CONFIRM_ACTION,
+                    entities={'selection_index': int(user_input.strip())},
+                    confidence=1.0,
+                    original_text=user_input
+                )
+            else:
+                parsed_intent = self.nlp_parser.parse(user_input)
+ 
             print(f"[DEBUG] 意图类型: {parsed_intent.intent_type.value}")
             print(f"[DEBUG] 实体信息: {parsed_intent.entities}")
+
 
             if parsed_intent.confidence < 0.3:
                 return "抱歉，我没有理解您的意思。您可以告诉我需要添加、修改或查询日程。"
@@ -644,8 +619,45 @@ class CalendarAgent:
             return "请指定要删除的事件时间，例如：'删除明天下午3点的会议' 或 '删除明天的会议'。"
 
     async def handle_confirm_action(self, parsed_intent: ParsedIntent) -> str:
-        """处理确认操作 - 完整版本"""
+        """处理确认操作 - 完整版本，增加冲突解决处理"""
         print(f"[DEBUG] 处理确认操作")
+
+        original_text = parsed_intent.original_text.strip()
+
+        # 🛠️ 新增：处理冲突解决中的时间选择
+        if 'conflict_info' in self.conversation_context:
+            return await self._handle_conflict_resolution(original_text)
+
+        # 🛠️ 新增：处理强制添加
+        if original_text in ['强制添加', '仍然添加'] and 'conflict_info' in self.conversation_context:
+            conflict_info = self.conversation_context['conflict_info']
+            original_event = conflict_info['original_event']
+
+            # 创建实际事件
+            event = CalendarEvent(
+                id=str(uuid4()),
+                title=original_event.title,
+                start_time=original_event.start_time,
+                end_time=original_event.end_time,
+                description=original_event.description,
+                location=original_event.location
+            )
+
+            # 清理冲突上下文
+            self.conversation_context.pop('conflict_info', None)
+
+            # 直接添加事件
+            success = await self.calendar.add_event(event)
+            if success:
+                # Google Calendar同步
+                if self.google_sync_enabled and self.google_calendar:
+                    sync_success = self.google_calendar.sync_event_to_google(event)
+                    if sync_success:
+                        print(f"✓ 事件已同步到Google Calendar")
+
+                return f"✅ 已强制添加事件 '{event.title}'！\n⚠️ 注意：该事件与现有事件时间重叠。"
+            else:
+                return "❌ 添加事件失败，请重试。"
 
         # 🏋️ 修复：处理训练计划确认
         if 'pending_workout_plan' in self.conversation_context:
@@ -737,9 +749,6 @@ class CalendarAgent:
                     return "事件选择无效，请重新操作。"
             else:
                 return "请先选择要修改的事件编号。"
-
-        # 🛠️ 修复：处理数字选择事件（用户直接输入数字选择事件）
-        original_text = parsed_intent.original_text.strip()
 
         # 🛠️ 修复：处理数字选择删除事件
         if original_text.isdigit() and 'available_events' in self.conversation_context:
@@ -915,8 +924,83 @@ class CalendarAgent:
 
             return "没有待确认的操作。如果您之前有未完成的操作，请重新开始。"
 
+    async def _handle_conflict_resolution(self, user_input: str) -> str:
+        """处理冲突解决流程"""
+        conflict_info = self.conversation_context['conflict_info']
+        alternative_times = conflict_info['alternative_times']
+        original_event = conflict_info['original_event']
+
+        # 处理用户选择推荐时间
+        if user_input.isdigit():
+            choice_index = int(user_input) - 1
+            if 0 <= choice_index < len(alternative_times):
+                selected_time = alternative_times[choice_index]
+
+                # 创建使用推荐时间的事件
+                event_duration = original_event.end_time - original_event.start_time
+                new_end_time = selected_time + event_duration
+
+                event = CalendarEvent(
+                    id=str(uuid4()),
+                    title=original_event.title,
+                    start_time=selected_time,
+                    end_time=new_end_time,
+                    description=original_event.description,
+                    location=original_event.location
+                )
+
+                # 清理冲突上下文
+                self.conversation_context.pop('conflict_info', None)
+
+                # 存储到待确认事件
+                self.conversation_context['pending_event'] = event
+                self.conversation_context['pending_action'] = 'add'
+
+                return (f"✅ 已选择推荐时间：{selected_time.strftime('%m-%d %H:%M')}\n\n"
+                        f"即将添加事件：\n"
+                        f"标题：{event.title}\n"
+                        f"时间：{event.start_time.strftime('%Y-%m-%d %H:%M')}\n"
+                        f"地点：{event.location}\n\n"
+                        f"确认添加吗？请输入'确认'或'取消'。")
+            else:
+                return f"❌ 无效选择，请输入1-{len(alternative_times)}之间的数字。"
+
+        # 处理用户选择原时间
+        elif user_input in ['原时间', '使用原时间']:
+            # 创建使用原时间的事件
+            event = CalendarEvent(
+                id=str(uuid4()),
+                title=original_event.title,
+                start_time=original_event.start_time,
+                end_time=original_event.end_time,
+                description=original_event.description,
+                location=original_event.location
+            )
+
+            # 清理冲突上下文
+            self.conversation_context.pop('conflict_info', None)
+
+            # 存储到待确认事件
+            self.conversation_context['pending_event'] = event
+            self.conversation_context['pending_action'] = 'add'
+
+            return (f"⚠️ 您选择了原时间（可能与现有事件冲突）\n\n"
+                    f"即将添加事件：\n"
+                    f"标题：{event.title}\n"
+                    f"时间：{event.start_time.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"地点：{event.location}\n\n"
+                    f"确认添加吗？请输入'确认'或'取消'。")
+
+        # 处理取消
+        elif user_input in ['取消', '不要了']:
+            self.conversation_context.pop('conflict_info', None)
+            return "❌ 事件添加已取消。"
+
+        else:
+            return "❌ 无效输入，请选择推荐时间编号，或输入'原时间'、'取消'。"
+
     async def handle_add_event(self, parsed_intent: ParsedIntent) -> str:
-        """处理添加事件 - 完全使用本地时间解析"""
+        """处理添加事件 - 完全使用本地时间解析，增加冲突检测"""
         print(f"[DEBUG] 处理添加事件，实体: {parsed_intent.entities}")
 
         entities = parsed_intent.entities
@@ -939,7 +1023,41 @@ class CalendarAgent:
         if not end_time:
             end_time = start_time + timedelta(hours=1)
 
-        # 创建事件
+        # 🛠️ 新增：创建临时事件对象用于冲突检测
+        temp_event = CalendarEvent(
+            id="temp_conflict_check",
+            title=title,
+            start_time=start_time,
+            end_time=end_time,
+            description=description,
+            location=location
+        )
+
+        # 🛠️ 新增：冲突检测
+        conflicting_events = await self.conflict_resolver.find_conflicting_events(temp_event)
+
+        if conflicting_events:
+            print(f"[DEBUG] 检测到 {len(conflicting_events)} 个冲突事件")
+
+            # 生成推荐时间
+            alternative_times = await self.conflict_resolver.suggest_alternative_times(temp_event, start_time)
+
+            if alternative_times:
+                # 🛠️ 修改：不再存储冲突信息到上下文，直接返回提示信息
+                conflict_msg = self._format_conflict_message(conflicting_events, alternative_times, temp_event)
+                return conflict_msg
+            else:
+                # 没有找到合适的时间
+                conflict_list = "\n".join(
+                    [f"• {e.title} ({e.start_time.strftime('%H:%M')}-{e.end_time.strftime('%H:%M')})"
+                     for e in conflicting_events])
+
+                return (f"⚠️ 时间冲突警告！\n\n"
+                        f"您要添加的事件与以下事件冲突：\n{conflict_list}\n\n"
+                        f"在当前时间段附近没有找到合适的替代时间。\n"
+                        f"请重新指定一个不同的时间。")
+
+        # 没有冲突，正常创建事件
         event = CalendarEvent(
             id=str(uuid4()),
             title=title,
@@ -956,6 +1074,21 @@ class CalendarAgent:
         self.conversation_context['pending_action'] = 'add'
 
         return confirm_msg
+
+    def _format_conflict_message(self, conflicting_events, alternative_times, original_event) -> str:
+        """格式化冲突提示消息 - 修改：移除选择提示"""
+        conflict_list = "\n".join([f"• {e.title} ({e.start_time.strftime('%H:%M')}-{e.end_time.strftime('%H:%M')})"
+                                   for e in conflicting_events])
+
+        time_suggestions = "\n".join([f"{i + 1}. {time.strftime('%m-%d %H:%M')}"
+                                      for i, time in enumerate(alternative_times[:5])])  # 最多显示5个建议
+
+        # 🛠️ 修改：移除选择提示，只提供信息性提示
+        return (f"⚠️ 时间冲突检测！\n\n"
+                f"您要添加的事件与以下事件冲突：\n{conflict_list}\n\n"
+                f"💡 智能推荐以下可用时间：\n{time_suggestions}\n\n"
+                f"请参考以上推荐时间重新安排您的事件。")
+
 
     async def handle_query_events(self, parsed_intent: ParsedIntent) -> str:
         """处理查询事件"""
@@ -1205,7 +1338,7 @@ class CalendarAgent:
     def _extract_datetime_from_text(self, text: str):
         """从文本中提取日期时间 - 添加调试信息"""
         import re
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, time, date
 
         text_lower = text.lower()
         print(f"[DEBUG] 从文本提取时间: {text}")
@@ -1225,42 +1358,97 @@ class CalendarAgent:
 
         def parse_hour_from_text(time_str: str):
             """从时间字符串中解析小时数"""
-            # 🛠️ 修复：匹配中文数字和阿拉伯数字
-            # 匹配模式：上午/下午/晚上 + 中文/阿拉伯数字 + 点/时
-            time_match = re.search(r'(上午|下午|晚上)?([一二三四五六七八九十\d]{1,3})[点时]半?', time_str)
+            time_match = re.search(r'(上午|下午|晚上)?\s*([一二三四五六七八九十\d]{1,3})\s*[点时]半?', time_str)
             if time_match:
                 period, hour_str = time_match.groups()
-
-                # 🛠️ 修复：处理中文数字
                 if hour_str in chinese_number_map:
                     hour = chinese_number_map[hour_str]
                 else:
-                    # 如果是阿拉伯数字，直接转换
                     try:
                         hour = int(hour_str)
                     except:
                         return None, None
 
                 minute = 0
-                # 🛠️ 修复：检查是否有"半"表示30分钟
                 if '半' in time_str:
                     minute = 30
 
                 print(f"[DEBUG] 时间解析结果: 时段={period}, 小时={hour}, 分钟={minute}")
 
-                # 处理12小时制转换
                 if period == '下午' and hour < 12:
                     hour += 12
                 elif period == '晚上' and hour < 12:
                     hour += 12
                 elif period == '上午' and hour == 12:
                     hour = 0
-                # 🛠️ 修复：如果没有指定时段，但小时数较小，默认为下午
                 elif not period and hour < 8:
                     hour += 12
 
                 return hour, minute
             return None, None
+
+        # 新增：识别明确的"X月Y日"或"Y号/日"
+        md_match = re.search(r'(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]', text_lower)
+        day_match = re.search(r'(?<!\d)(\d{1,2})\s*[日号](?!\d)', text_lower)
+
+        if md_match:
+            month = int(md_match.group(1))
+            day = int(md_match.group(2))
+            year = now.year
+            # 若指定月份已过，推到下一年
+            if month < now.month or (month == now.month and day < now.day):
+                year += 1
+            try:
+                base_date = date(year, month, day)
+            except:
+                base_date = (now + timedelta(days=1)).date()
+            # 解析时段或小时
+            hour, minute = parse_hour_from_text(text_lower)
+            if hour is not None:
+                start_time = datetime.combine(base_date, time(hour=hour, minute=minute))
+                return start_time, start_time + timedelta(hours=1)
+            # 若没有给出具体小时，但给出了时段关键词，使用默认小时
+            if '下午' in text_lower:
+                start_time = datetime.combine(base_date, time(hour=15, minute=0))
+                return start_time, start_time + timedelta(hours=1)
+            if '上午' in text_lower:
+                start_time = datetime.combine(base_date, time(hour=9, minute=0))
+                return start_time, start_time + timedelta(hours=1)
+            if '晚上' in text_lower:
+                start_time = datetime.combine(base_date, time(hour=19, minute=0))
+                return start_time, start_time + timedelta(hours=1)
+            # 无时段和小时则默认上午9点
+            start_time = datetime.combine(base_date, time(hour=9, minute=0))
+            return start_time, start_time + timedelta(hours=1)
+
+        if day_match:
+            day = int(day_match.group(1))
+            month = now.month
+            year = now.year
+            # 若日已过，假定是下个月（考虑年末）
+            if day < now.day:
+                month += 1
+                if month > 12:
+                    month = 1
+                    year += 1
+            try:
+                base_date = date(year, month, day)
+            except:
+                base_date = (now + timedelta(days=1)).date()
+
+            hour, minute = parse_hour_from_text(text_lower)
+            if hour is not None:
+                start_time = datetime.combine(base_date, time(hour=hour, minute=minute))
+                return start_time, start_time + timedelta(hours=1)
+            if '下午' in text_lower:
+                start_time = datetime.combine(base_date, time(hour=15, minute=0))
+                return start_time, start_time + timedelta(hours=1)
+            if '上午' in text_lower:
+                start_time = datetime.combine(base_date, time(hour=9, minute=0))
+                return start_time, start_time + timedelta(hours=1)
+            if '晚上' in text_lower:
+                start_time = datetime.combine(base_date, time(hour=19, minute=0))
+                return start_time, start_time + timedelta(hours=1)
 
         # 🛠️ 修复：处理"明天"的情况
         if '明天' in text_lower:
@@ -1269,24 +1457,24 @@ class CalendarAgent:
 
             hour, minute = parse_hour_from_text(text_lower)
             if hour is not None:
-                start_time = datetime.combine(base_date, now.time().replace(hour=hour, minute=minute, second=0))
+                start_time = datetime.combine(base_date, time(hour=hour, minute=minute))
                 print(f"[DEBUG] 生成开始时间: {start_time}")
                 return start_time, start_time + timedelta(hours=1)
 
         # 🛠️ 修复：处理"今天"的情况
         elif '今天' in text_lower:
-            base_date = datetime.now().date()
+            base_date = now.date()
             hour, minute = parse_hour_from_text(text_lower)
             if hour is not None:
-                start_time = datetime.combine(base_date, datetime.min.time().replace(hour=hour, minute=minute))
+                start_time = datetime.combine(base_date, time(hour=hour, minute=minute))
                 return start_time, start_time + timedelta(hours=1)
 
         # 🛠️ 修复：处理没有日期的情况（默认今天）
         else:
             hour, minute = parse_hour_from_text(text_lower)
             if hour is not None:
-                base_date = datetime.now().date()
-                start_time = datetime.combine(base_date, datetime.min.time().replace(hour=hour, minute=minute))
+                base_date = now.date()
+                start_time = datetime.combine(base_date, time(hour=hour, minute=minute))
                 return start_time, start_time + timedelta(hours=1)
 
         return None, None

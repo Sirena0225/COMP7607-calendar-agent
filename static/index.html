@@ -3,189 +3,432 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 日历助手</title>
+    <title>AI 日程管理助手</title>
     <style>
-        /* 基础样式 */
+        /* ====== 基础样式 RESET ====== */
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-            font-family: "Segoe UI", Roboto, sans-serif;
+            font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+        :root {
+            --primary: #1a73e8;
+            --primary-soft: #e8f0fe;
+            --bg: #f5f5f7;
+            --card-bg: #ffffff;
+            --border: #e0e0e0;
+            --text-main: #202124;
+            --text-sub: #5f6368;
+            --danger: #d93025;
         }
         body {
-            display: grid;
-            grid-template-columns: 350px 1fr;
-            grid-template-rows: 60px 1fr;
             height: 100vh;
-            gap: 10px;
-            padding: 10px;
-            background-color: #f5f5f7;
+            background: radial-gradient(circle at top left, #e8f0fe 0, #f5f5f7 40%, #ffffff 100%);
+            display: grid;
+            grid-template-rows: 64px 1fr;
+            grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
+            gap: 12px;
+            padding: 12px;
+            color: var(--text-main);
         }
 
-        /* 顶部导航 */
+        /* ====== 顶部导航 ====== */
         .header {
             grid-column: 1 / 3;
             display: flex;
             align-items: center;
-            justify-content: center;
-            background-color: #fff;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .header h1 {
-            color: #1a73e8;
-            font-size: 1.5rem;
-        }
-
-        /* 对话框区域 */
-        .chat-container {
-            grid-row: 2 / 3;
-            background-color: #fff;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        .chat-messages {
-            flex: 1;
-            padding: 15px;
-            overflow-y: auto;
-        }
-        .message {
-            margin: 8px 0;
-            max-width: 80%;
-            padding: 10px 15px;
-            border-radius: 18px;
-            line-height: 1.4;
-        }
-        .user-message {
-            background-color: #1a73e8;
-            color: white;
-            margin-left: auto;
-        }
-        .agent-message {
-            background-color: #e5e5ea;
-            color: #000;
-            margin-right: auto;
-        }
-        .chat-input {
-            display: flex;
-            padding: 10px;
-            border-top: 1px solid #eee;
-        }
-        .chat-input input {
-            flex: 1;
-            padding: 10px 15px;
-            border: 1px solid #ddd;
-            border-radius: 20px;
-            outline: none;
-            font-size: 1rem;
-        }
-        .chat-input button {
-            margin-left: 10px;
-            padding: 10px 20px;
-            background-color: #1a73e8;
-            color: white;
-            border: none;
-            border-radius: 20px;
-            cursor: pointer;
-        }
-        .chat-input button:hover {
-            background-color: #0d66d0;
-        }
-
-        /* 日历区域 */
-        .calendar-container {
-            grid-row: 2 / 3;
-            background-color: #fff;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-        }
-        .calendar-header {
-            display: flex;
             justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
+            padding: 0 20px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(16px);
+            box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
         }
-        .calendar-nav {
+        .header-left {
             display: flex;
             align-items: center;
             gap: 10px;
         }
-        .nav-button {
-            padding: 6px 12px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            background-color: white;
+        .logo-circle {
+            width: 32px;
+            height: 32px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #1a73e8, #34a853);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-weight: 700;
+            font-size: 18px;
+        }
+        .header-title {
+            display: flex;
+            flex-direction: column;
+        }
+        .header-title h1 {
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+        .header-title span {
+            font-size: 0.8rem;
+            color: var(--text-sub);
+        }
+        .header-right {
+            font-size: 0.8rem;
+            color: var(--text-sub);
+        }
+
+        /* ====== Chat 区域 ====== */
+        .chat-container {
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .chat-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .chat-header-title {
+            display: flex;
+            flex-direction: column;
+        }
+        .chat-header-title span:first-child {
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+        .chat-header-title span:last-child {
+            font-size: 0.8rem;
+            color: var(--text-sub);
+        }
+        .chat-badges {
+            display: flex;
+            gap: 6px;
+            font-size: 0.7rem;
+        }
+        .badge {
+            padding: 2px 8px;
+            border-radius: 999px;
+            background-color: var(--primary-soft);
+            color: var(--primary);
+            border: 1px solid rgba(26, 115, 232, 0.2);
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 12px 14px 10px 14px;
+            overflow-y: auto;
+            background: radial-gradient(circle at top, #f9fbff 0, #ffffff 60%);
+        }
+
+        .chat-message-row {
+            display: flex;
+            margin-bottom: 10px;
+        }
+        .chat-message-row.agent {
+            justify-content: flex-start;
+        }
+        .chat-message-row.user {
+            justify-content: flex-end;
+        }
+        .avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 999px;
+            background: var(--primary-soft);
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 15px;
+            margin-right: 8px;
+        }
+        .chat-message-row.user .avatar {
+            margin-right: 0;
+            margin-left: 8px;
+            background: #1a73e8;
+            color: #ffffff;
+        }
+        .bubble-wrapper {
+            max-width: 78%;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .bubble-meta {
+            font-size: 0.7rem;
+            color: var(--text-sub);
+        }
+        .bubble {
+            padding: 8px 12px;
+            border-radius: 16px;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .bubble.agent {
+            background-color: #f1f3f4;
+            border-bottom-left-radius: 4px;
+        }
+        .bubble.user {
+            background: linear-gradient(135deg, #1a73e8, #2563eb);
+            color: #ffffff;
+            border-bottom-right-radius: 4px;
+        }
+
+        /* typing indicator */
+        .typing-indicator {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 10px;
+            color: var(--text-sub);
+            font-size: 0.85rem;
+        }
+        .typing-dots {
+            display: inline-flex;
+            gap: 3px;
+        }
+        .typing-dots span {
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--text-sub);
+            animation: blink 1.4s infinite both;
+        }
+        .typing-dots span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+        .typing-dots span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+        @keyframes blink {
+            0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+            40% { opacity: 1; transform: translateY(-2px); }
+        }
+
+        .chat-footer {
+            border-top: 1px solid var(--border);
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background: #fafafa;
+        }
+        .quick-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .chip {
+            font-size: 0.75rem;
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid #e0e0e0;
+            background: #ffffff;
             cursor: pointer;
-            font-size: 1rem;
+            color: var(--text-sub);
+        }
+        .chip:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: var(--primary-soft);
+        }
+        .chat-input-row {
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+        }
+        .chat-input-box {
+            flex: 1;
+            position: relative;
+        }
+        #userInput {
+            width: 100%;
+            min-height: 38px;
+            max-height: 90px;
+            padding: 8px 12px;
+            resize: none;
+            border-radius: 999px;
+            border: 1px solid #dadce0;
+            outline: none;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            background: #ffffff;
+        }
+        #userInput:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 1px rgba(26, 115, 232, 0.12);
+        }
+        .input-hint {
+            position: absolute;
+            right: 12px;
+            bottom: 6px;
+            font-size: 0.7rem;
+            color: var(--text-sub);
+        }
+        .send-btn {
+            padding: 9px 16px;
+            border-radius: 999px;
+            border: none;
+            background: linear-gradient(135deg, #1a73e8, #2563eb);
+            color: #ffffff;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            box-shadow: 0 8px 18px rgba(37, 99, 235, 0.35);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .send-btn:disabled {
+            opacity: 0.6;
+            cursor: default;
+            box-shadow: none;
+        }
+
+        /* ====== 日历区域 ====== */
+        .calendar-container {
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+            padding: 14px 16px 14px 16px;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+        .calendar-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .calendar-nav {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .nav-button {
+            padding: 5px 9px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: #ffffff;
+            cursor: pointer;
+            font-size: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
         .nav-button:hover {
-            background-color: #f0f7ff;
+            border-color: var(--primary);
+            background: var(--primary-soft);
+        }
+        .current-date {
+            font-size: 1rem;
+            font-weight: 600;
+        }
+        .view-buttons {
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
         .view-buttons button {
-            padding: 6px 12px;
-            margin-left: 5px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            background-color: white;
+            padding: 5px 10px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: #ffffff;
+            font-size: 0.8rem;
             cursor: pointer;
         }
         .view-buttons button.active {
-            background-color: #1a73e8;
-            color: white;
-            border-color: #1a73e8;
+            background: var(--primary);
+            color: #ffffff;
+            border-color: var(--primary);
         }
-        .current-date {
-            font-size: 1.2rem;
-            font-weight: 500;
+
+        .calendar-body {
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            gap: 8px;
+            flex: 1;
+            min-height: 0;
         }
 
         /* 月历视图 */
         .month-view {
             display: grid;
             grid-template-columns: repeat(7, 1fr);
-            gap: 5px;
-            flex: 1;
+            gap: 4px;
+            border-radius: 12px;
+            padding: 8px;
+            background: #fafbff;
         }
         .weekday {
             text-align: center;
-            font-weight: 500;
-            color: #666;
-            padding: 10px 0;
-            border-bottom: 1px solid #eee;
+            font-size: 0.8rem;
+            color: var(--text-sub);
+            padding-bottom: 4px;
+            border-bottom: 1px solid #e0e7ff;
         }
         .day-cell {
+            margin-top: 4px;
             aspect-ratio: 1;
+            min-height: 70px;
+            border-radius: 10px;
+            background: #ffffff;
+            border: 1px solid #edf0ff;
+            padding: 4px;
             display: flex;
             flex-direction: column;
-            align-items: center;
-            justify-content: flex-start;
-            padding: 5px;
-            border-radius: 6px;
-            cursor: pointer;
             position: relative;
-            border: 1px solid #f0f0f0;
-            min-height: 80px;
+            cursor: pointer;
+            transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.08s ease;
         }
         .day-cell:hover {
-            background-color: #f0f7ff;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 10px rgba(148, 163, 184, 0.32);
+            background: #f6f7ff;
         }
         .day-cell.today {
-            background-color: #e8f0fe;
-            border: 2px solid #1a73e8;
+            border-width: 2px;
+            border-color: var(--primary);
+            background: #e8f0fe;
+        }
+        .day-cell.selected {
+            outline: 2px solid #2563eb;
+            outline-offset: -2px;
         }
         .day-cell.other-month {
-            color: #ccc;
-            background-color: #fafafa;
+            background: #fafafa;
+            color: #bdbdbd;
+        }
+        .day-number-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2px;
         }
         .day-number {
+            font-size: 0.85rem;
             font-weight: 500;
-            margin-bottom: 5px;
+        }
+        .day-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 999px;
+            background: var(--primary);
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+        .day-cell.has-events .day-dot {
+            opacity: 1;
         }
         .day-events {
             width: 100%;
@@ -198,12 +441,14 @@
         .event-item {
             font-size: 0.7rem;
             padding: 2px 4px;
-            background-color: #1a73e8;
-            color: white;
-            border-radius: 3px;
+            border-radius: 4px;
+            color: #ffffff;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+        }
+        .event-item.blue {
+            background: #1a73e8;
         }
         .event-item.orange {
             background-color: #f57c00;
@@ -216,370 +461,614 @@
         }
         .event-more {
             font-size: 0.7rem;
-            color: #666;
+            color: var(--text-sub);
             text-align: center;
             margin-top: 2px;
         }
 
-        /* 日视图 */
+        /* 日视图（当天日程区） */
         .day-view {
-            display: none;
+            border-radius: 12px;
+            border: 1px solid #edf0ff;
+            padding: 8px 10px;
+            background: #f9fafb;
+            display: flex;
             flex-direction: column;
-            height: 100%;
+            min-height: 110px;
+        }
+        .day-view-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+        .day-view-header span:first-child {
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+        .day-view-header span:last-child {
+            font-size: 0.8rem;
+            color: var(--text-sub);
         }
         .day-events-list {
             flex: 1;
+            margin-top: 4px;
+            overflow-y: auto;
             display: flex;
             flex-direction: column;
-            gap: 10px;
-            margin-top: 10px;
-            overflow-y: auto;
+            gap: 8px;
         }
         .day-event {
-            padding: 10px 15px;
-            border-left: 4px solid #1a73e8;
-            background-color: #f8f9fa;
-            border-radius: 4px;
+            background: #ffffff;
+            border-radius: 10px;
+            padding: 6px 10px;
+            border-left: 4px solid var(--primary);
+            box-shadow: 0 2px 6px rgba(148, 163, 184, 0.35);
+            font-size: 0.85rem;
         }
         .event-time {
-            font-weight: 500;
-            color: #1a73e8;
+            font-weight: 600;
+            color: var(--primary);
         }
         .event-title {
-            margin-top: 5px;
-            font-size: 1rem;
+            margin-top: 2px;
+        }
+        .event-location {
+            margin-top: 2px;
+            font-size: 0.8rem;
+            color: var(--text-sub);
+        }
+        .event-description {
+            margin-top: 2px;
+            font-size: 0.8rem;
+            color: var(--text-sub);
         }
         .loading {
             text-align: center;
-            padding: 20px;
-            color: #666;
+            padding: 12px;
+            color: var(--text-sub);
+            font-size: 0.85rem;
+        }
+        .ai-tag {
+            display: inline-block;
+            margin-top: 6px;
+            padding: 4px 8px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .ai-tag.fitness {
+            background-color: #e0f3ff;
+            color: #0077cc;
+        }
+
+        .ai-tag.conflict {
+            background-color: #ffe8e6;
+            color: #d93025;
+        }
+
+
+        /* ====== 响应式 ====== */
+        @media (max-width: 900px) {
+            body {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto auto auto;
+                height: auto;
+            }
+            .header {
+                grid-column: 1 / 2;
+            }
+            .chat-container {
+                grid-column: 1 / 2;
+                height: 60vh;
+            }
+            .calendar-container {
+                grid-column: 1 / 2;
+                min-height: 380px;
+            }
         }
     </style>
 </head>
 <body>
     <!-- 顶部导航 -->
-    <div class="header">
-        <h1>AI 日历助手</h1>
-    </div>
+    <header class="header">
+        <div class="header-left">
+            <div class="logo-circle">A</div>
+            <div class="header-title">
+                <h1>AI 日程管理助手</h1>
+                <span>自然语言 → 结构化日程的智能 Agent 演示</span>
+            </div>
+        </div>
+        <div class="header-right" id="headerDate"></div>
+    </header>
 
-    <!-- 对话框区域 -->
-    <div class="chat-container">
+    <!-- Chat 区域 -->
+    <section class="chat-container">
+        <div class="chat-header">
+            <div class="chat-header-title">
+                <span>对话区</span>
+                <span>用中文直接描述你的计划，Agent 会帮你生成日程</span>
+            </div>
+            <div class="chat-badges">
+                <div class="badge">NLP 解析</div>
+                <div class="badge">日程生成</div>
+            </div>
+        </div>
+
         <div class="chat-messages" id="chatMessages">
-            <div class="message agent-message">你好！我是你的日历助手，可以帮你管理日程。请问有什么需要？</div>
+            <!-- 初始欢迎语 -->
         </div>
-        <div class="chat-input">
-            <input type="text" id="userInput" placeholder="输入你的需求...">
-            <button onclick="sendMessage()">发送</button>
-        </div>
-    </div>
 
-    <!-- 日历区域 -->
-    <div class="calendar-container">
+        <!-- 助手思考中 -->
+        <div class="typing-indicator" id="typingIndicator">
+            <span style="font-size: 0.8rem;">助手正在思考</span>
+            <div class="typing-dots">
+                <span></span><span></span><span></span>
+            </div>
+        </div>
+
+        <div class="chat-footer">
+            <div class="quick-actions">
+                <button class="chip" data-quick="帮我安排一下明天下午三点和张三开会。">明天下午三点和张三开会</button>
+                <button class="chip" data-quick="把下周一到周三晚上七点的时间都留给期末复习。">期末复习时间</button>
+                <button class="chip" data-quick="帮我看看这周有没有空的晚上，可以跑步。">查找空闲时间</button>
+            </div>
+            <div class="chat-input-row">
+                <div class="chat-input-box">
+                    <textarea id="userInput" placeholder="例如：帮我安排明天上午开个项目进度会…" rows="1"></textarea>
+                    <div class="input-hint">Enter 发送 · Shift+Enter 换行</div>
+                </div>
+                <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+                    <span>发送</span> <span>➤</span>
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <!-- 日历 + 日程区域 -->
+    <section class="calendar-container">
         <div class="calendar-header">
             <div class="calendar-nav">
                 <button class="nav-button" onclick="changeMonth(-1)">← 上个月</button>
-                <div class="current-date" id="currentDate">2024年6月</div>
+                <div class="current-date" id="currentDate"></div>
                 <button class="nav-button" onclick="changeMonth(1)">下个月 →</button>
+                <button class="nav-button" onclick="goToday()">回到今天</button>
             </div>
             <div class="view-buttons">
                 <button class="active" id="monthViewBtn" onclick="switchView('month')">月视图</button>
-                <button id="dayViewBtn" onclick="switchView('day')">日视图</button>
+                <button id="dayViewBtn" onclick="switchView('day')">仅看当天日程</button>
             </div>
         </div>
 
-        <!-- 月历视图 -->
-        <div class="month-view" id="monthView">
-            <!-- 星期标题 -->
-            <div class="weekday">日</div>
-            <div class="weekday">一</div>
-            <div class="weekday">二</div>
-            <div class="weekday">三</div>
-            <div class="weekday">四</div>
-            <div class="weekday">五</div>
-            <div class="weekday">六</div>
+        <div class="calendar-body">
+            <!-- 月视图 -->
+            <div class="month-view" id="monthView">
+                <div class="weekday">日</div>
+                <div class="weekday">一</div>
+                <div class="weekday">二</div>
+                <div class="weekday">三</div>
+                <div class="weekday">四</div>
+                <div class="weekday">五</div>
+                <div class="weekday">六</div>
+                <!-- 日期 cell 由 JS 注入 -->
+            </div>
 
-            <!-- 日期单元格（由JS动态生成） -->
-        </div>
-
-        <!-- 日视图 -->
-        <div class="day-view" id="dayView">
-            <div class="day-events-list" id="dayEventsList">
-                <!-- 日程由JS动态生成 -->
+            <!-- 日视图（当天日程） -->
+            <div class="day-view" id="dayView">
+                <div class="day-view-header">
+                    <span id="dayViewTitle">今日安排</span>
+                    <span id="dayViewSubTitle"></span>
+                </div>
+                <div class="day-events-list" id="dayEventsList">
+                    <!-- 日程由 JS 渲染 -->
+                </div>
             </div>
         </div>
-    </div>
+    </section>
 
     <script>
-        // 当前视图状态（month/day）
+        // ====== 全局状态 ======
         let currentView = 'month';
-        // 当前显示的月份
         let currentMonth = new Date();
-        // 当前选中的日期
         let selectedDate = new Date();
+        let isSending = false;
 
-        // 初始化页面
-        window.onload = function() {
+        window.onload = function () {
+            initHeaderDate();
+            initChatArea();
             renderMonthView();
-            document.getElementById('userInput').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') sendMessage();
-            });
+            renderDayView(selectedDate);
         };
 
-        // 切换月份
+        function initHeaderDate() {
+            const headerDate = document.getElementById('headerDate');
+            const now = new Date();
+            const weekdayMap = ['周日','周一','周二','周三','周四','周五','周六'];
+            headerDate.textContent =
+                `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 · ${weekdayMap[now.getDay()]}`;
+        }
+
+        function initChatArea() {
+            const chatMessages = document.getElementById('chatMessages');
+            appendMessage('agent',
+                '你好，我是你的日程管理助手。\n\n你可以用自然语言描述计划，比如：\n- “帮我安排明天下午三点和张三开会”\n- “下周一到周五每天晚上七点提醒我复习机器学习”\n\n我会解析并写入右侧日历，方便你在展示时说明整个 Agent 流程。',
+                false
+            );
+
+            const input = document.getElementById('userInput');
+            input.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+
+            document.querySelectorAll('.chip[data-quick]').forEach(chip => {
+                chip.addEventListener('click', () => {
+                    input.value = chip.getAttribute('data-quick');
+                    input.focus();
+                });
+            });
+        }
+
+        // ====== Chat 相关 ======
+        function appendMessage(role, text, animate = false) {
+            const chatMessages = document.getElementById('chatMessages');
+            const row = document.createElement('div');
+            row.className = `chat-message-row ${role}`;
+
+            const avatar = document.createElement('div');
+            avatar.className = 'avatar';
+            avatar.textContent = role === 'user' ? '我' : 'AI';
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'bubble-wrapper';
+
+            const meta = document.createElement('div');
+            meta.className = 'bubble-meta';
+            const now = new Date();
+            const timeStr = now.toTimeString().slice(0, 5);
+            meta.textContent = (role === 'user' ? '你 · ' : '助手 · ') + timeStr;
+
+            const bubble = document.createElement('div');
+            bubble.className = `bubble ${role}`;
+
+            wrapper.appendChild(meta);
+            wrapper.appendChild(bubble);
+
+            // 在 AI 回复后追加健身/冲突提示标签
+            if (role === "agent") {
+                const tagHtml = checkSpecialTags(text);
+                if (tagHtml) {
+                    const tagDiv = document.createElement('div');
+                    tagDiv.innerHTML = tagHtml;
+                    wrapper.appendChild(tagDiv);
+                }
+            }
+
+
+            if (role === 'agent') {
+                row.appendChild(avatar);
+                row.appendChild(wrapper);
+            } else {
+                row.appendChild(wrapper);
+                row.appendChild(avatar);
+            }
+
+            chatMessages.appendChild(row);
+            scrollChatBottom();
+
+            if (animate) {
+                typeWriterEffect(bubble, text);
+            } else {
+                bubble.textContent = text;
+                scrollChatBottom();
+            }
+        }
+
+        function checkSpecialTags(text) {
+            const tags = [];
+
+            // 健身计划识别（可自行扩展）
+            const fitnessKeywords = ["健身", "训练", "力量训练", "跑步", "锻炼", "运动", "瑜伽"];
+            if (fitnessKeywords.some(k => text.includes(k))) {
+                tags.push(`<span class="ai-tag fitness">🏋️ 健身计划已识别</span>`);
+            }
+
+            // 冲突检测识别
+            const conflictKeywords = ["冲突", "时间有重叠", "建议调整", "已有安排", "无法安排"];
+            if (conflictKeywords.some(k => text.includes(k))) {
+                tags.push(`<span class="ai-tag conflict">⚠️ 时间冲突提示</span>`);
+            }
+
+            return tags.join("<br>");
+        }
+
+
+        function scrollChatBottom() {
+            const chatMessages = document.getElementById('chatMessages');
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function showTyping() {
+            const el = document.getElementById('typingIndicator');
+            el.style.display = 'flex';
+            scrollChatBottom();
+        }
+        function hideTyping() {
+            const el = document.getElementById('typingIndicator');
+            el.style.display = 'none';
+        }
+
+        function typeWriterEffect(el, text, speed = 15) {
+            let index = 0;
+            function step() {
+                if (index <= text.length) {
+                    el.textContent = text.slice(0, index);
+                    index++;
+                    scrollChatBottom();
+                    setTimeout(step, speed);
+                }
+            }
+            step();
+        }
+
+        async function sendMessage() {
+            if (isSending) return;
+            const input = document.getElementById('userInput');
+            const btn = document.getElementById('sendBtn');
+            const message = input.value.trim();
+            if (!message) return;
+
+            appendMessage('user', message, false);
+            input.value = '';
+            isSending = true;
+            btn.disabled = true;
+            showTyping();
+
+            try {
+                const response = await fetch('/api/message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                hideTyping();
+                appendMessage('agent', data.response || '（后端未返回 response 字段）', true);
+
+                // 刷新当前视图（方便演示：Agent 一旦创建了事件，右侧立刻更新）
+                setTimeout(() => {
+                    if (currentView === 'month') {
+                        renderMonthView();
+                    }
+                    renderDayView(selectedDate);
+                }, 350);
+            } catch (e) {
+                hideTyping();
+                appendMessage('agent', '出错了：' + e.message, false);
+            } finally {
+                isSending = false;
+                btn.disabled = false;
+            }
+        }
+
+        // ====== 日历视图切换 ======
+        function switchView(view) {
+            currentView = view;
+            document.getElementById('monthViewBtn').classList.toggle('active', view === 'month');
+            document.getElementById('dayViewBtn').classList.toggle('active', view === 'day');
+
+            const monthView = document.getElementById('monthView');
+            const dayView = document.getElementById('dayView');
+            monthView.style.display = view === 'month' ? 'grid' : 'none';
+            // 日视图容器始终显示，只是月视图隐藏与否
+            renderDayView(selectedDate);
+        }
+
         function changeMonth(direction) {
             currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + direction, 1);
             renderMonthView();
         }
 
-        // 切换视图（月视图/日视图）
-        function switchView(view) {
-            currentView = view;
-            // 更新按钮状态
-            document.getElementById('monthViewBtn').classList.toggle('active', view === 'month');
-            document.getElementById('dayViewBtn').classList.toggle('active', view === 'day');
-            // 显示对应视图
-            document.getElementById('monthView').style.display = view === 'month' ? 'grid' : 'none';
-            document.getElementById('dayView').style.display = view === 'day' ? 'flex' : 'none';
-
-            if (view === 'day') {
-                renderDayView(selectedDate);
-            }
+        function goToday() {
+            currentMonth = new Date();
+            selectedDate = new Date();
+            renderMonthView();
+            renderDayView(selectedDate);
         }
 
-        // 渲染月历视图
+        // ====== 渲染月视图 ======
         function renderMonthView() {
             const year = currentMonth.getFullYear();
             const month = currentMonth.getMonth();
-            document.getElementById('currentDate').textContent = `${year}年${month+1}月`;
+            document.getElementById('currentDate').textContent = `${year}年${month + 1}月`;
 
             const monthView = document.getElementById('monthView');
-            // 清空原有日期（保留星期标题）
+            // 保留前 7 个星期标题
             while (monthView.children.length > 7) {
                 monthView.removeChild(monthView.lastChild);
             }
 
-            // 获取当月第一天是星期几（0-6，0是周日）
             const firstDay = new Date(year, month, 1).getDay();
-            // 获取当月天数
             const daysInMonth = new Date(year, month + 1, 0).getDate();
-            // 获取上个月的天数
             const daysInPrevMonth = new Date(year, month, 0).getDate();
 
-            // 添加上月的日期（灰色显示）
+            // 上月补位
             for (let i = firstDay - 1; i >= 0; i--) {
                 const dayCell = document.createElement('div');
                 dayCell.className = 'day-cell other-month';
                 const day = daysInPrevMonth - i;
                 dayCell.innerHTML = `
-                    <div class="day-number">${day}</div>
+                    <div class="day-number-row">
+                        <div class="day-number">${day}</div>
+                        <div class="day-dot"></div>
+                    </div>
                     <div class="day-events" id="events-${year}-${month}-${day}"></div>
                 `;
                 monthView.appendChild(dayCell);
             }
 
-            // 添加当月日期
             const today = new Date();
+            const selectedKey = `${selectedDate.getFullYear()}-${selectedDate.getMonth()}-${selectedDate.getDate()}`;
+
+            // 当前月日期
             for (let day = 1; day <= daysInMonth; day++) {
                 const dayCell = document.createElement('div');
                 dayCell.className = 'day-cell';
+                const key = `${year}-${month}-${day}`;
+
                 dayCell.innerHTML = `
-                    <div class="day-number">${day}</div>
-                    <div class="day-events" id="events-${year}-${month+1}-${day}"></div>
+                    <div class="day-number-row">
+                        <div class="day-number">${day}</div>
+                        <div class="day-dot"></div>
+                    </div>
+                    <div class="day-events" id="events-${year}-${month + 1}-${day}"></div>
                 `;
 
-                // 标记今天
                 if (day === today.getDate() && month === today.getMonth() && year === today.getFullYear()) {
                     dayCell.classList.add('today');
                 }
+                if (key === selectedKey) {
+                    dayCell.classList.add('selected');
+                }
 
-                // 点击日期切换到日视图
                 dayCell.onclick = () => {
                     selectedDate = new Date(year, month, day);
-                    switchView('day');
+                    renderMonthView();
+                    renderDayView(selectedDate);
                 };
 
                 monthView.appendChild(dayCell);
-
-                // 加载当天的事件
-                loadDayEventsForMonthView(year, month+1, day);
+                loadDayEventsForMonthView(year, month + 1, day);
             }
 
-            // 添加下个月的日期（灰色显示）
-            const totalCells = 42; // 6行×7列
-            const remainingCells = totalCells - (firstDay + daysInMonth);
+            // 下月补位到 6 行
+            const totalCells = 42;
+            const usedCells = firstDay + daysInMonth;
+            const remainingCells = totalCells - usedCells;
             for (let day = 1; day <= remainingCells; day++) {
                 const dayCell = document.createElement('div');
                 dayCell.className = 'day-cell other-month';
                 dayCell.innerHTML = `
-                    <div class="day-number">${day}</div>
-                    <div class="day-events" id="events-${year}-${month+2}-${day}"></div>
+                    <div class="day-number-row">
+                        <div class="day-number">${day}</div>
+                        <div class="day-dot"></div>
+                    </div>
+                    <div class="day-events" id="events-${year}-${month + 2}-${day}"></div>
                 `;
                 monthView.appendChild(dayCell);
             }
         }
 
-        // 为月历视图加载某天的事件
+        // 为月视图加载某天事件（简略显示）
         async function loadDayEventsForMonthView(year, month, day) {
             const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
             const eventsContainer = document.getElementById(`events-${year}-${month}-${day}`);
-
             if (!eventsContainer) return;
 
-            // 显示加载中
-            eventsContainer.innerHTML = '<div class="loading">加载中...</div>';
-
+            eventsContainer.innerHTML = '';
             try {
-                // 🛠️ 修复：使用正确的API端点
                 const response = await fetch('/api/day-schedule', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({date: dateStr})
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ date: dateStr })
                 });
-
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-
                 const data = await response.json();
-                eventsContainer.innerHTML = '';
-
-                // 🛠️ 修复：检查数据格式
                 const events = data.events || [];
 
-                // 显示最多3个事件
-                const eventsToShow = events.slice(0, 3);
-                const colorClasses = ['', 'orange', 'green', 'purple'];
-
-                eventsToShow.forEach((event, index) => {
-                    const eventEl = document.createElement('div');
-                    eventEl.className = `event-item ${colorClasses[index] || ''}`;
-                    const startTime = new Date(event.start_time);
-                    const timeStr = `${startTime.getHours()}:${String(startTime.getMinutes()).padStart(2, '0')}`;
-                    eventEl.title = `${event.title} - ${timeStr}`;
-                    eventEl.textContent = event.title;
-                    eventsContainer.appendChild(eventEl);
-                });
-
-                // 如果还有更多事件，显示提示
-                if (events.length > 3) {
-                    const moreEl = document.createElement('div');
-                    moreEl.className = 'event-more';
-                    moreEl.textContent = `还有 ${events.length - 3} 个事件...`;
-                    eventsContainer.appendChild(moreEl);
-                }
-
-                // 如果没有事件，显示空状态
                 if (events.length === 0) {
-                    eventsContainer.innerHTML = '';
+                    const cell = eventsContainer.closest('.day-cell');
+                    cell && cell.classList.remove('has-events');
+                    return;
                 }
 
+                const cell = eventsContainer.closest('.day-cell');
+                cell && cell.classList.add('has-events');
+
+                const colorClasses = ['blue', 'orange', 'green', 'purple'];
+                const toShow = events.slice(0, 2);
+                toShow.forEach((event, index) => {
+                    const el = document.createElement('div');
+                    el.className = `event-item ${colorClasses[index % colorClasses.length]}`;
+                    el.textContent = event.title || '未命名事件';
+                    eventsContainer.appendChild(el);
+                });
+                if (events.length > 2) {
+                    const more = document.createElement('div');
+                    more.className = 'event-more';
+                    more.textContent = `+${events.length - 2}`;
+                    eventsContainer.appendChild(more);
+                }
             } catch (e) {
-                console.error('加载事件失败:', e);
-                eventsContainer.innerHTML = '<div class="event-more">加载失败</div>';
+                eventsContainer.innerHTML = '';
             }
         }
 
-        // 渲染日视图
+        // ====== 渲染日视图（当天日程） ======
         async function renderDayView(date) {
             const year = date.getFullYear();
             const month = date.getMonth() + 1;
             const day = date.getDate();
-            document.getElementById('currentDate').textContent = `${year}年${month}月${day}日`;
+
+            const weekdayMap = ['周日','周一','周二','周三','周四','周五','周六'];
+            const dayViewTitle = document.getElementById('dayViewTitle');
+            const dayViewSub = document.getElementById('dayViewSubTitle');
+            const eventsList = document.getElementById('dayEventsList');
+
+            dayViewTitle.textContent = `${year}年${month}月${day}日的日程`;
+            dayViewSub.textContent = weekdayMap[date.getDay()];
+            eventsList.innerHTML = '<div class="loading">加载中…</div>';
 
             const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-            const eventsList = document.getElementById('dayEventsList');
-            eventsList.innerHTML = '<div class="loading">加载中...</div>';
 
             try {
-                // 🛠️ 修复：使用正确的API端点
                 const response = await fetch('/api/day-schedule', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({date: dateStr})
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ date: dateStr })
                 });
-
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-
                 const data = await response.json();
+                const events = data.events || [];
                 eventsList.innerHTML = '';
 
-                // 🛠️ 修复：检查数据格式
-                const events = data.events || [];
-
                 if (events.length === 0) {
-                    eventsList.innerHTML = '<div style="text-align: center; padding: 20px; color: #666;">今天没有安排</div>';
+                    eventsList.innerHTML =
+                        '<div class="loading" style="color:#9ca3af;">今天还没有安排，可以在左侧用自然语言创建一个日程。</div>';
                     return;
                 }
 
-                // 按时间排序事件
                 events.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
 
-                // 渲染事件
                 events.forEach(event => {
                     const start = new Date(event.start_time);
                     const end = new Date(event.end_time);
-                    const timeStr = `${start.getHours().toString().padStart(2, '0')}:${start.getMinutes().toString().padStart(2, '0')} - ${end.getHours().toString().padStart(2, '0')}:${end.getMinutes().toString().padStart(2, '0')}`;
+                    const timeStr =
+                        `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')} - ` +
+                        `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`;
 
-                    const eventEl = document.createElement('div');
-                    eventEl.className = 'day-event';
-                    eventEl.innerHTML = `
+                    const el = document.createElement('div');
+                    el.className = 'day-event';
+                    el.innerHTML = `
                         <div class="event-time">${timeStr}</div>
-                        <div class="event-title">${event.title}</div>
+                        <div class="event-title">${event.title || '未命名事件'}</div>
                         ${event.location ? `<div class="event-location">📍 ${event.location}</div>` : ''}
-                        ${event.description ? `<div class="event-description" style="margin-top: 5px; color: #666; font-size: 0.9rem;">${event.description}</div>` : ''}
+                        ${event.description ? `<div class="event-description">${event.description}</div>` : ''}
                     `;
-                    eventsList.appendChild(eventEl);
+                    eventsList.appendChild(el);
                 });
             } catch (e) {
-                console.error('加载日视图事件失败:', e);
-                eventsList.innerHTML = '<div style="text-align: center; padding: 20px; color: #ff0000;">加载失败: ' + e.message + '</div>';
-            }
-        }
-
-        // 发送消息到后端
-        async function sendMessage() {
-            const input = document.getElementById('userInput');
-            const message = input.value.trim();
-            if (!message) return;
-
-            // 添加用户消息到界面
-            const chatMessages = document.getElementById('chatMessages');
-            chatMessages.innerHTML += `<div class="message user-message">${message}</div>`;
-            input.value = '';
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-
-            // 调用后端API
-            try {
-                const response = await fetch('/api/message', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({message: message})
-                });
-
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-
-                const data = await response.json();
-
-                // 添加AI回复到界面
-                chatMessages.innerHTML += `<div class="message agent-message">${data.response}</div>`;
-                chatMessages.scrollTop = chatMessages.scrollHeight;
-
-                // 刷新日历视图（如果有新事件）
-                setTimeout(() => {
-                    if (currentView === 'month') {
-                        renderMonthView();
-                    } else {
-                        renderDayView(selectedDate);
-                    }
-                }, 500);
-
-            } catch (e) {
-                chatMessages.innerHTML += `<div class="message agent-message" style="color: red;">出错了: ${e.message}</div>`;
-                chatMessages.scrollTop = chatMessages.scrollHeight;
+                eventsList.innerHTML = `<div class="loading" style="color:var(--danger);">加载失败：${e.message}</div>`;
             }
         }
     </script>
