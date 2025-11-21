@@ -1,13 +1,15 @@
+import asyncio
 import re
 from uuid import uuid4
-from typing import Callable, Optional
 from nlp_parser import LLMParser
 from database import SQLiteCalendar
 from config import APIConfig
-from models import CalendarEvent, ParsedIntent, IntentType, UserProfile, WorkoutPlan
+from models import CalendarEvent, ParsedIntent, IntentType, UserProfile, WorkoutPlan, TaskBreakdown
 from datetime import datetime, timedelta
+from google_calendar_sync import GoogleCalendarSync
 import os
 from conflict_resolver import ConflictResolver
+from typing import Tuple, Optional, Dict, Any, List
 
 
 class CalendarAgent:
@@ -17,8 +19,6 @@ class CalendarAgent:
         self.conversation_context = {}
         self.conversation_timeout = 30 * 60  # 30分钟超时
         self.last_interaction_time = None
-        self.google_calendar = None
-        self.google_sync_enabled = False
 
         # 🏋️ 新增：训练计划生成器
         self.workout_generator = WorkoutPlanGenerator()
@@ -29,6 +29,8 @@ class CalendarAgent:
         # 🛠️ 修复：先初始化基础组件，再初始化Google Calendar
         print("初始化基础组件...")
 
+        # 延迟初始化Google Calendar，确保其他组件先就绪
+        self._initialize_google_calendar()
 
     def _cleanup_expired_conversation(self):
         """清理过期的对话上下文"""
@@ -43,6 +45,45 @@ class CalendarAgent:
         """检查是否在训练计划对话中"""
         return ('workout_plan_stage' in self.conversation_context and
                 self.conversation_context['workout_plan_stage'] not in ['completed', 'confirmation'])
+
+    def _initialize_google_calendar(self):
+        """单独初始化Google Calendar同步"""
+        print("初始化Google Calendar同步...")
+
+        try:
+            # 先检查配置是否存在
+            config_file = 'google-calendar-api.json'
+            env_var = os.getenv('GOOGLE_CALENDAR_CREDENTIALS_JSON')
+
+            print(f"[DEBUG] 检查Google Calendar配置:")
+            print(f"  - 环境变量: {'已设置' if env_var else '未设置'}")
+            print(f"  - 配置文件: {'存在' if os.path.exists(config_file) else '不存在'}")
+
+            if env_var or os.path.exists(config_file):
+                from google_calendar_sync import GoogleCalendarSync
+                self.google_calendar = GoogleCalendarSync()
+                self.google_sync_enabled = self.google_calendar.is_available()
+
+                if self.google_sync_enabled:
+                    print("✓ Google Calendar同步已启用")
+                else:
+                    print("⚠ Google Calendar服务初始化失败")
+            else:
+                self.google_calendar = None
+                self.google_sync_enabled = False
+                print("⚠ Google Calendar同步未配置")
+
+        except ImportError as e:
+            self.google_calendar = None
+            self.google_sync_enabled = False
+            print(f"⚠ Google Calendar依赖缺失: {e}")
+            print("  请运行: pip install google-auth google-api-python-client")
+        except Exception as e:
+            self.google_calendar = None
+            self.google_sync_enabled = False
+            print(f"⚠ Google Calendar初始化异常: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def process_input(self, user_input: str) -> str:
         """处理用户输入"""
@@ -73,27 +114,15 @@ class CalendarAgent:
                     )
                     return await self.handle_cancel_action(cancel_intent)
 
-
             # 🏋️ 修复：首先检查是否在训练计划对话中
             if self._is_in_workout_plan_conversation():
                 print(f"[DEBUG] 在训练计划对话中，直接继续对话")
                 return await self._continue_workout_plan_conversation_directly(user_input)
 
             parsed_intent = self.nlp_parser.parse(user_input)
-            # 如果用户只输入数字且存在可选事件列表，将其视为确认/选择操作（用于选择要删除/修改的事件）
-            if user_input.strip().isdigit() and 'available_events' in self.conversation_context:
-                parsed_intent = ParsedIntent(
-                    intent_type=IntentType.CONFIRM_ACTION,
-                    entities={'selection_index': int(user_input.strip())},
-                    confidence=1.0,
-                    original_text=user_input
-                )
-            else:
-                parsed_intent = self.nlp_parser.parse(user_input)
- 
+
             print(f"[DEBUG] 意图类型: {parsed_intent.intent_type.value}")
             print(f"[DEBUG] 实体信息: {parsed_intent.entities}")
-
 
             if parsed_intent.confidence < 0.3:
                 return "抱歉，我没有理解您的意思。您可以告诉我需要添加、修改或查询日程。"
@@ -148,6 +177,12 @@ class CalendarAgent:
             return await self.handle_create_workout_plan(parsed_intent)
         elif intent_type == IntentType.DELETE_WORKOUT_PLANS:
             return await self.handle_delete_workout_plans(parsed_intent)
+            # 🎯 新增：任务分解意图处理
+        elif intent_type == IntentType.BREAKDOWN_TASK:
+            return await self.handle_breakdown_task(parsed_intent)
+            # 🗑️ 新增：删除任务分解意图处理
+        elif intent_type == IntentType.DELETE_TASK_BREAKDOWNS:
+            return await self.handle_delete_task_breakdowns(parsed_intent)
         else:
             return f"抱歉，我暂时无法处理这个请求。意图类型: {intent_type.value}"
 
@@ -619,12 +654,59 @@ class CalendarAgent:
             return "请指定要删除的事件时间，例如：'删除明天下午3点的会议' 或 '删除明天的会议'。"
 
     async def handle_confirm_action(self, parsed_intent: ParsedIntent) -> str:
-        """处理确认操作 - 完整版本，增加冲突解决处理"""
+        """处理确认操作 - 完整版本，修复任务分解确认问题"""
         print(f"[DEBUG] 处理确认操作")
 
         original_text = parsed_intent.original_text.strip()
 
-        # 🛠️ 新增：处理冲突解决中的时间选择
+        # 🛠️ 修复：首先处理任务分解确认 - 放在最前面
+        if 'pending_task_breakdown' in self.conversation_context:
+            task_breakdown = self.conversation_context['pending_task_breakdown']
+
+            print(f"[DEBUG] 确认添加任务分解: {task_breakdown.id}")
+            print(f"[DEBUG] 任务标题: {task_breakdown.title}")
+            print(f"[DEBUG] 总时长: {task_breakdown.total_hours}")
+            print(f"[DEBUG] 截止日期: {task_breakdown.deadline}")
+            print(f"[DEBUG] 分解块数: {len(task_breakdown.chunks)}")
+
+            # 🛠️ 修复：先添加任务分解到数据库
+            success = await self.calendar.add_task_breakdown(task_breakdown)
+            print(f"[DEBUG] 保存任务分解到数据库结果: {success}")
+
+            if not success:
+                # 🛠️ 修复：如果保存失败，清理上下文并返回错误
+                self.conversation_context.pop('pending_task_breakdown', None)
+                self.conversation_context.pop('task_breakdown_stage', None)
+                return "❌ 保存任务分解失败，请重试。"
+
+            # 🛠️ 修复：然后将任务块添加到日历
+            events_added = await self._add_task_chunks_to_calendar(task_breakdown)
+            print(f"[DEBUG] 添加任务块到日历结果: {events_added} 个事件")
+
+            # 🛠️ 修复：标记对话完成并清理上下文
+            self.conversation_context.pop('pending_task_breakdown', None)
+            self.conversation_context.pop('task_breakdown_stage', None)
+            self.conversation_context.pop('task_info', None)
+
+            if events_added > 0:
+                return (f"✅ 任务分解已成功添加到日历！\n\n"
+                        f"📊 计划详情：\n"
+                        f"• 任务: {task_breakdown.title}\n"
+                        f"• 总时长: {task_breakdown.total_hours} 小时\n"
+                        f"• 截止: {task_breakdown.deadline.strftime('%m月%d日')}\n"
+                        f"• 共添加了 {events_added} 个任务块\n\n"
+                        f"🎯 开始您的高效工作吧！")
+            else:
+                # 🛠️ 修复：即使没有添加事件，也认为成功保存了分解计划
+                return (f"⚠️ 任务分解计划已保存，但未能添加到日历事件\n\n"
+                        f"📊 计划详情：\n"
+                        f"• 任务: {task_breakdown.title}\n"
+                        f"• 总时长: {task_breakdown.total_hours} 小时\n"
+                        f"• 截止: {task_breakdown.deadline.strftime('%m月%d日')}\n"
+                        f"• 分解为 {len(task_breakdown.chunks)} 个任务块\n\n"
+                        f"💡 您可以在日历中手动安排这些时间段。")
+
+        # 🎯 新增：处理冲突解决中的时间选择
         if 'conflict_info' in self.conversation_context:
             return await self._handle_conflict_resolution(original_text)
 
@@ -917,7 +999,9 @@ class CalendarAgent:
                 'event_to_modify', 'new_start_time', 'new_end_time', 'events_to_delete',
                 'delete_range', 'event_to_delete', 'pending_delete_action',
                 # 🏋️ 新增：训练计划相关上下文
-                'workout_plan_stage', 'workout_plan_data'
+                'workout_plan_stage', 'workout_plan_data',
+                # 🎯 新增：任务分解相关上下文
+                'task_breakdown_stage', 'task_info'
             ]
             for key in keys_to_remove:
                 self.conversation_context.pop(key, None)
@@ -1338,7 +1422,7 @@ class CalendarAgent:
     def _extract_datetime_from_text(self, text: str):
         """从文本中提取日期时间 - 添加调试信息"""
         import re
-        from datetime import datetime, timedelta, time, date
+        from datetime import datetime, timedelta
 
         text_lower = text.lower()
         print(f"[DEBUG] 从文本提取时间: {text}")
@@ -1358,97 +1442,42 @@ class CalendarAgent:
 
         def parse_hour_from_text(time_str: str):
             """从时间字符串中解析小时数"""
-            time_match = re.search(r'(上午|下午|晚上)?\s*([一二三四五六七八九十\d]{1,3})\s*[点时]半?', time_str)
+            # 🛠️ 修复：匹配中文数字和阿拉伯数字
+            # 匹配模式：上午/下午/晚上 + 中文/阿拉伯数字 + 点/时
+            time_match = re.search(r'(上午|下午|晚上)?([一二三四五六七八九十\d]{1,3})[点时]半?', time_str)
             if time_match:
                 period, hour_str = time_match.groups()
+
+                # 🛠️ 修复：处理中文数字
                 if hour_str in chinese_number_map:
                     hour = chinese_number_map[hour_str]
                 else:
+                    # 如果是阿拉伯数字，直接转换
                     try:
                         hour = int(hour_str)
                     except:
                         return None, None
 
                 minute = 0
+                # 🛠️ 修复：检查是否有"半"表示30分钟
                 if '半' in time_str:
                     minute = 30
 
                 print(f"[DEBUG] 时间解析结果: 时段={period}, 小时={hour}, 分钟={minute}")
 
+                # 处理12小时制转换
                 if period == '下午' and hour < 12:
                     hour += 12
                 elif period == '晚上' and hour < 12:
                     hour += 12
                 elif period == '上午' and hour == 12:
                     hour = 0
+                # 🛠️ 修复：如果没有指定时段，但小时数较小，默认为下午
                 elif not period and hour < 8:
                     hour += 12
 
                 return hour, minute
             return None, None
-
-        # 新增：识别明确的"X月Y日"或"Y号/日"
-        md_match = re.search(r'(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]', text_lower)
-        day_match = re.search(r'(?<!\d)(\d{1,2})\s*[日号](?!\d)', text_lower)
-
-        if md_match:
-            month = int(md_match.group(1))
-            day = int(md_match.group(2))
-            year = now.year
-            # 若指定月份已过，推到下一年
-            if month < now.month or (month == now.month and day < now.day):
-                year += 1
-            try:
-                base_date = date(year, month, day)
-            except:
-                base_date = (now + timedelta(days=1)).date()
-            # 解析时段或小时
-            hour, minute = parse_hour_from_text(text_lower)
-            if hour is not None:
-                start_time = datetime.combine(base_date, time(hour=hour, minute=minute))
-                return start_time, start_time + timedelta(hours=1)
-            # 若没有给出具体小时，但给出了时段关键词，使用默认小时
-            if '下午' in text_lower:
-                start_time = datetime.combine(base_date, time(hour=15, minute=0))
-                return start_time, start_time + timedelta(hours=1)
-            if '上午' in text_lower:
-                start_time = datetime.combine(base_date, time(hour=9, minute=0))
-                return start_time, start_time + timedelta(hours=1)
-            if '晚上' in text_lower:
-                start_time = datetime.combine(base_date, time(hour=19, minute=0))
-                return start_time, start_time + timedelta(hours=1)
-            # 无时段和小时则默认上午9点
-            start_time = datetime.combine(base_date, time(hour=9, minute=0))
-            return start_time, start_time + timedelta(hours=1)
-
-        if day_match:
-            day = int(day_match.group(1))
-            month = now.month
-            year = now.year
-            # 若日已过，假定是下个月（考虑年末）
-            if day < now.day:
-                month += 1
-                if month > 12:
-                    month = 1
-                    year += 1
-            try:
-                base_date = date(year, month, day)
-            except:
-                base_date = (now + timedelta(days=1)).date()
-
-            hour, minute = parse_hour_from_text(text_lower)
-            if hour is not None:
-                start_time = datetime.combine(base_date, time(hour=hour, minute=minute))
-                return start_time, start_time + timedelta(hours=1)
-            if '下午' in text_lower:
-                start_time = datetime.combine(base_date, time(hour=15, minute=0))
-                return start_time, start_time + timedelta(hours=1)
-            if '上午' in text_lower:
-                start_time = datetime.combine(base_date, time(hour=9, minute=0))
-                return start_time, start_time + timedelta(hours=1)
-            if '晚上' in text_lower:
-                start_time = datetime.combine(base_date, time(hour=19, minute=0))
-                return start_time, start_time + timedelta(hours=1)
 
         # 🛠️ 修复：处理"明天"的情况
         if '明天' in text_lower:
@@ -1457,24 +1486,24 @@ class CalendarAgent:
 
             hour, minute = parse_hour_from_text(text_lower)
             if hour is not None:
-                start_time = datetime.combine(base_date, time(hour=hour, minute=minute))
+                start_time = datetime.combine(base_date, now.time().replace(hour=hour, minute=minute, second=0))
                 print(f"[DEBUG] 生成开始时间: {start_time}")
                 return start_time, start_time + timedelta(hours=1)
 
         # 🛠️ 修复：处理"今天"的情况
         elif '今天' in text_lower:
-            base_date = now.date()
+            base_date = datetime.now().date()
             hour, minute = parse_hour_from_text(text_lower)
             if hour is not None:
-                start_time = datetime.combine(base_date, time(hour=hour, minute=minute))
+                start_time = datetime.combine(base_date, datetime.min.time().replace(hour=hour, minute=minute))
                 return start_time, start_time + timedelta(hours=1)
 
         # 🛠️ 修复：处理没有日期的情况（默认今天）
         else:
             hour, minute = parse_hour_from_text(text_lower)
             if hour is not None:
-                base_date = now.date()
-                start_time = datetime.combine(base_date, time(hour=hour, minute=minute))
+                base_date = datetime.now().date()
+                start_time = datetime.combine(base_date, datetime.min.time().replace(hour=hour, minute=minute))
                 return start_time, start_time + timedelta(hours=1)
 
         return None, None
@@ -1556,6 +1585,10 @@ class CalendarAgent:
 🏋️ 训练计划：
 - 创建训练计划：如"帮我制定训练计划"、"创建健身计划"
 - 删除训练计划：如"删除所有训练计划"
+
+🎯 任务分解：
+- 分解任务：如"我有一个任务要在12月25号之前完成，大概需要8个小时，帮我分配空余时间"
+- 智能分配：将大任务自动分解成小块，分配到截止日期前的空余时间段
 
 请输入您的需求，我会帮您处理。
         """
@@ -1928,6 +1961,529 @@ class CalendarAgent:
         for exercise in workout['exercises']:
             description += f"• {exercise['name']}: {exercise['sets']}组 × {exercise['reps']}次\n"
         return description
+
+    # 🎯 新增：任务分解处理方法
+    async def handle_breakdown_task(self, parsed_intent: ParsedIntent) -> str:
+        """处理任务分解请求"""
+        print(f"[DEBUG] 处理任务分解，实体: {parsed_intent.entities}")
+
+        entities = parsed_intent.entities
+        original_text = parsed_intent.original_text
+
+        # 检查是否已经在任务分解对话中
+        if self._is_in_task_breakdown_conversation():
+            return await self._continue_task_breakdown_conversation(parsed_intent)
+
+        # 开始新的任务分解对话
+        task_info = self._extract_task_info_from_entities(entities, original_text)
+
+        if not task_info.get('total_hours') or not task_info.get('deadline'):
+            # 信息不完整，开始多轮对话收集信息
+            self.conversation_context['task_breakdown_stage'] = 'collecting_info'
+            self.conversation_context['task_info'] = task_info
+
+            missing_fields = []
+            if not task_info.get('title'):
+                missing_fields.append('任务名称')
+            if not task_info.get('total_hours'):
+                missing_fields.append('所需小时数')
+            if not task_info.get('deadline'):
+                missing_fields.append('截止日期')
+
+            return (f"🎯 我来帮您分解任务！\n\n"
+                    f"需要补充以下信息：\n"
+                    f"{', '.join(missing_fields)}\n\n"
+                    f"请先告诉我{'任务名称是什么？' if '任务名称' in missing_fields else '这个任务需要多少小时完成？'}")
+
+        # 信息完整，直接进行分解
+        return await self._generate_task_breakdown(task_info)
+
+    def _is_in_task_breakdown_conversation(self) -> bool:
+        """检查是否在任务分解对话中"""
+        return ('task_breakdown_stage' in self.conversation_context and
+                self.conversation_context['task_breakdown_stage'] not in ['completed', 'confirmation'])
+
+    async def _continue_task_breakdown_conversation(self, parsed_intent: ParsedIntent) -> str:
+        """继续任务分解的多轮对话"""
+        stage = self.conversation_context['task_breakdown_stage']
+        task_info = self.conversation_context['task_info']
+        text = parsed_intent.original_text.strip()
+
+        print(f"[DEBUG] 任务分解对话阶段: {stage}, 输入: {text}")
+
+        if stage == 'collecting_info':
+            # 收集缺失的信息
+            if 'title' not in task_info or not task_info['title']:
+                task_info['title'] = text
+                self.conversation_context['task_breakdown_stage'] = 'collecting_hours'
+                return "✅ 已记录任务名称。请问这个任务需要多少小时完成？"
+
+            elif 'total_hours' not in task_info or not task_info['total_hours']:
+                try:
+                    hours = float(text)
+                    if hours <= 0:
+                        return "❌ 小时数必须大于0，请重新输入："
+                    task_info['total_hours'] = hours
+                    self.conversation_context['task_breakdown_stage'] = 'collecting_deadline'
+                    return "✅ 已记录所需小时数。请问截止日期是什么时候？（例如：12月25号）"
+                except ValueError:
+                    return "❌ 请输入有效的小时数，例如：5 或 3.5"
+
+            elif 'deadline' not in task_info or not task_info['deadline']:
+                # 尝试解析截止日期
+                deadline = self._extract_deadline_from_text(text)
+                if deadline:
+                    task_info['deadline'] = deadline
+                    return await self._generate_task_breakdown(task_info)
+                else:
+                    return "❌ 无法识别截止日期，请重新输入，例如：12月25号 或 下周五"
+
+        return "❌ 任务分解流程出现错误，请重新开始。"
+
+    def _extract_task_info_from_entities(self, entities: dict, original_text: str) -> dict:
+        """从实体中提取任务信息"""
+        task_info = {
+            'title': entities.get('title', '待完成任务'),
+            'total_hours': entities.get('total_hours'),
+            'deadline': entities.get('deadline'),
+            'raw_text': original_text
+        }
+
+        # 如果实体中没有截止日期，尝试从文本中提取
+        if not task_info['deadline']:
+            task_info['deadline'] = self._extract_deadline_from_text(original_text)
+
+        return task_info
+
+    def _extract_deadline_from_text(self, text: str):
+        """从文本中提取截止日期"""
+        from datetime import datetime, timedelta
+        import re
+
+        text_lower = text.lower()
+        now = datetime.now()
+
+        # 匹配 "X月Y号" 格式
+        month_day_pattern = r'(\d+)月\s*(\d+)\s*号'
+        match = re.search(month_day_pattern, text_lower)
+        if match:
+            try:
+                month = int(match.group(1))
+                day = int(match.group(2))
+                year = now.year
+                # 如果月份已经过去，假设是明年
+                if month < now.month or (month == now.month and day < now.day):
+                    year += 1
+                return datetime(year, month, day, 23, 59, 59)
+            except ValueError:
+                pass
+
+        # 匹配相对日期
+        if '明天' in text_lower:
+            return (now + timedelta(days=1)).replace(hour=23, minute=59, second=59)
+        elif '后天' in text_lower:
+            return (now + timedelta(days=2)).replace(hour=23, minute=59, second=59)
+        elif '大后天' in text_lower:
+            return (now + timedelta(days=3)).replace(hour=23, minute=59, second=59)
+
+        # 匹配 "下周一" 等
+        weekdays = ['一', '二', '三', '四', '五', '六', '日', '天']
+        for i, day in enumerate(weekdays):
+            if f'下周{day}' in text_lower:
+                days_ahead = (i + 1) - now.weekday()
+                if days_ahead <= 0:
+                    days_ahead += 7
+                return (now + timedelta(days=days_ahead)).replace(hour=23, minute=59, second=59)
+
+        return None
+
+    async def _generate_task_breakdown(self, task_info: dict) -> str:
+        """生成任务分解计划 - 修复版本"""
+        from uuid import uuid4
+        from datetime import datetime, timedelta
+
+        title = task_info['title']
+        total_hours = task_info['total_hours']
+        deadline = task_info['deadline']
+
+        # 🛠️ 修复：如果 deadline 是字符串，转换为 datetime 对象
+        if isinstance(deadline, str):
+            try:
+                deadline = datetime.fromisoformat(deadline)
+            except:
+                return "❌ 无法解析截止日期，请重新输入。"
+
+        print(f"[DEBUG] 生成任务分解: {title}, {total_hours}小时, 截止{deadline}")
+
+        # 计算可用时间段
+        available_slots = await self._find_available_slots(deadline)
+
+        if not available_slots:
+            return "❌ 在截止日期前没有找到足够的空余时间来安排这个任务。"
+
+        # 分解任务
+        chunks = self._breakdown_task_into_chunks(total_hours, available_slots)
+
+        if not chunks:
+            return "❌ 无法将任务分解到可用时间段中，请尝试减少任务小时数或延长截止日期。"
+
+        # 🛠️ 修复：计算实际安排的总小时数
+        total_scheduled = sum(chunk['duration_hours'] for chunk in chunks)
+
+        # 创建任务分解对象
+        task_breakdown = TaskBreakdown(
+            id=str(uuid4()),
+            title=title,
+            total_hours=total_hours,
+            deadline=deadline,
+            chunks=chunks,
+            created_at=datetime.now()
+        )
+
+        # 存储到上下文等待确认
+        self.conversation_context['pending_task_breakdown'] = task_breakdown
+        self.conversation_context['task_breakdown_stage'] = 'confirmation'
+
+        # 格式化显示分解结果
+        breakdown_summary = self._format_breakdown_summary(task_breakdown)
+
+        return (f"✅ 已为您生成任务分解计划！\n\n"
+                f"{breakdown_summary}\n\n"
+                f"是否确认将这些任务块添加到日历中？请输入'确认'或'取消'")
+
+    # 🛠️ 修复：改进 _find_available_slots 方法
+    async def _find_available_slots(self, deadline: datetime) -> List[Dict]:
+        """在截止日期前查找可用时间段"""
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+        available_slots = []
+
+        # 查询从今天到截止日期的事件
+        events = await self.calendar.list_events(now, deadline)
+
+        # 定义工作日和工作时间（9:00-18:00）
+        work_start_hour = 9
+        work_end_hour = 18
+
+        current_date = now.date()
+        while current_date <= deadline.date():
+            # 跳过周末
+            if current_date.weekday() < 5:  # 0-4 是周一到周五
+                # 🛠️ 修复：对于今天，只考虑当前时间之后的时间段
+                if current_date == now.date():
+                    # 今天的工作开始时间取当前时间和9点的较大值
+                    day_start_hour = max(work_start_hour, now.hour)
+                    # 如果当前时间已经超过工作结束时间，跳过今天
+                    if day_start_hour >= work_end_hour:
+                        current_date += timedelta(days=1)
+                        continue
+                else:
+                    day_start_hour = work_start_hour
+
+                # 生成该工作日的可用时间段
+                day_slots = self._generate_daily_slots(
+                    current_date, day_start_hour, work_end_hour, events, now
+                )
+                available_slots.extend(day_slots)
+
+            current_date += timedelta(days=1)
+
+        print(f"[DEBUG] 找到 {len(available_slots)} 个未来可用时间段")
+        return available_slots
+
+    def _generate_daily_slots(self, date, start_hour, end_hour, events, current_time) -> List[Dict]:
+        """生成单日的可用时间段 - 修复：避免过去时间"""
+        from datetime import datetime, timedelta
+
+        slots = []
+
+        # 🛠️ 修复：对于今天，开始时间取当前时间和指定开始时间的较大值
+        if date == current_time.date():
+            start_time = max(
+                datetime.combine(date, datetime.min.time()).replace(hour=start_hour),
+                current_time.replace(second=0, microsecond=0)  # 去掉秒和微秒
+            )
+        else:
+            start_time = datetime.combine(date, datetime.min.time()).replace(hour=start_hour)
+
+        end_time = datetime.combine(date, datetime.min.time()).replace(hour=end_hour)
+
+        # 如果开始时间已经超过结束时间，返回空列表
+        if start_time >= end_time:
+            return slots
+
+        # 找出该日期的事件
+        day_events = [e for e in events if e.start_time.date() == date]
+        day_events.sort(key=lambda x: x.start_time)
+
+        # 生成可用时间段
+        current_slot_start = start_time
+        for event in day_events:
+            # 事件开始前的时间段
+            if current_slot_start < event.start_time:
+                slot_duration = (event.start_time - current_slot_start).total_seconds() / 3600
+                if slot_duration >= 0.5:  # 至少30分钟
+                    slots.append({
+                        'start': current_slot_start,
+                        'end': event.start_time,
+                        'duration': slot_duration
+                    })
+            # 更新当前时间到事件结束
+            current_slot_start = max(current_slot_start, event.end_time)
+            if current_slot_start >= end_time:
+                break
+
+        # 最后的时间段
+        if current_slot_start < end_time:
+            slot_duration = (end_time - current_slot_start).total_seconds() / 3600
+            if slot_duration >= 0.5:
+                slots.append({
+                    'start': current_slot_start,
+                    'end': end_time,
+                    'duration': slot_duration
+                })
+
+        # 🛠️ 修复：过滤掉已经开始的时间段
+        slots = [slot for slot in slots if slot['start'] > current_time]
+
+        return slots
+
+    def _breakdown_task_into_chunks(self, total_hours: float, available_slots: List[Dict]) -> List[Dict]:
+        """将任务分解成小块并分配到可用时间段"""
+        from datetime import datetime
+
+        chunks = []
+        remaining_hours = total_hours
+        now = datetime.now()
+
+        # 🛠️ 修复：确保只使用未来的时间段
+        future_slots = [slot for slot in available_slots if slot['start'] > now]
+
+        print(f"[DEBUG] 过滤后剩余 {len(future_slots)} 个未来时间段")
+
+        # 按时间顺序排序可用时间段
+        future_slots.sort(key=lambda x: x['start'])
+
+        for slot in future_slots:
+            if remaining_hours <= 0:
+                break
+
+            # 计算这个时间段可以分配的小时数（最大2小时，避免过长的连续工作）
+            max_chunk_hours = min(2.0, slot['duration'], remaining_hours)
+
+            if max_chunk_hours >= 0.5:  # 至少30分钟
+                chunk = {
+                    'start_time': slot['start'],
+                    'duration_hours': max_chunk_hours,
+                    'title': f"任务块 - {len(chunks) + 1}"
+                }
+                chunks.append(chunk)
+                remaining_hours -= max_chunk_hours
+
+        # 如果还有剩余时间，尝试将任务块拆分到更小的时间段
+        if remaining_hours > 0:
+            # 重新尝试分配剩余时间到较小的块
+            for slot in future_slots:
+                if remaining_hours <= 0:
+                    break
+
+                # 检查这个时间段是否已经被使用
+                slot_used = False
+                for chunk in chunks:
+                    if chunk['start_time'] == slot['start']:
+                        slot_used = True
+                        break
+
+                if not slot_used:
+                    max_chunk_hours = min(1.0, slot['duration'], remaining_hours)
+                    if max_chunk_hours >= 0.5:
+                        chunk = {
+                            'start_time': slot['start'],
+                            'duration_hours': max_chunk_hours,
+                            'title': f"任务块 - {len(chunks) + 1}"
+                        }
+                        chunks.append(chunk)
+                        remaining_hours -= max_chunk_hours
+
+        print(f"[DEBUG] 任务分解结果: {len(chunks)} 个块，剩余 {remaining_hours} 小时")
+        return chunks if remaining_hours <= 0 else []
+
+    def _format_breakdown_summary(self, task_breakdown: TaskBreakdown) -> str:
+        """格式化任务分解摘要"""
+        from datetime import datetime
+
+        now = datetime.now()
+
+        # 🛠️ 修复：过滤掉过去的时间段
+        future_chunks = [chunk for chunk in task_breakdown.chunks if chunk['start_time'] > now]
+
+        summary = f"📋 任务: {task_breakdown.title}\n"
+        summary += f"⏱️ 总时长: {task_breakdown.total_hours} 小时\n"
+        summary += f"📅 截止: {task_breakdown.deadline.strftime('%m月%d日')}\n\n"
+        summary += "🗓️ 分解安排:\n"
+
+        for i, chunk in enumerate(future_chunks, 1):
+            start_time = chunk['start_time']
+            duration = chunk['duration_hours']
+            summary += f"{i}. {start_time.strftime('%m月%d日 %H:%M')} - {duration}小时\n"
+
+        total_scheduled = sum(chunk['duration_hours'] for chunk in future_chunks)
+        if total_scheduled < task_breakdown.total_hours:
+            summary += f"\n⚠️ 注意: 只安排了 {total_scheduled} 小时，还有 {task_breakdown.total_hours - total_scheduled} 小时需要额外安排。"
+
+        return summary
+
+    # 🎯 新增：将任务块添加到日历
+    async def _add_task_chunks_to_calendar(self, task_breakdown: TaskBreakdown) -> int:
+        """将任务分解块添加到日历"""
+        from datetime import datetime
+
+        events_added = 0
+        now = datetime.now()
+
+        print(f"[DEBUG] 开始添加任务块到日历，共 {len(task_breakdown.chunks)} 个块")
+
+        for i, chunk in enumerate(task_breakdown.chunks, 1):
+            start_time = chunk['start_time']
+            duration_hours = chunk['duration_hours']
+            end_time = start_time + timedelta(hours=duration_hours)
+
+            # 🛠️ 修复：最终检查，确保不添加过去的事件
+            if start_time < now:
+                print(f"[DEBUG] 跳过过去的时间段: {start_time}")
+                continue
+
+            print(f"[DEBUG] 处理第 {i} 个任务块:")
+            print(f"  - 开始时间: {start_time}")
+            print(f"  - 持续时间: {duration_hours} 小时")
+            print(f"  - 结束时间: {end_time}")
+
+            # 创建任务事件
+            event = CalendarEvent(
+                id=str(uuid4()),
+                title=f"{task_breakdown.title} - {chunk['title']}",
+                start_time=start_time,
+                end_time=end_time,
+                description=f"任务分解块 - 总任务: {task_breakdown.title}\n预计时长: {duration_hours}小时",
+                location=""
+            )
+
+            print(f"[DEBUG] 创建事件: {event.title}")
+
+            # 添加到日历
+            success = await self.calendar.add_event(event)
+            if success:
+                events_added += 1
+                print(f"[DEBUG] 成功添加事件 {i}")
+            else:
+                print(f"[DEBUG] 添加事件 {i} 失败")
+
+        print(f"[DEBUG] 总共成功添加了 {events_added} 个事件")
+        return events_added
+
+    # 在 CalendarAgent 类中添加调试方法
+    async def debug_task_breakdown(self):
+        """调试任务分解功能"""
+        print("\n=== 任务分解调试信息 ===")
+
+        # 检查数据库连接
+        try:
+            import sqlite3
+            conn = sqlite3.connect('calendar.db')
+            cursor = conn.cursor()
+
+            # 检查表是否存在
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='task_breakdowns'")
+            table_exists = cursor.fetchone()
+            print(f"[DEBUG] task_breakdowns表存在: {bool(table_exists)}")
+
+            if table_exists:
+                cursor.execute("SELECT COUNT(*) FROM task_breakdowns")
+                count = cursor.fetchone()[0]
+                print(f"[DEBUG] 当前任务分解数量: {count}")
+
+            conn.close()
+        except Exception as e:
+            print(f"[DEBUG] 数据库检查失败: {e}")
+
+        # 检查上下文状态
+        print(f"[DEBUG] 对话上下文: {self.conversation_context}")
+        print("=== 调试结束 ===\n")
+
+    # 🗑️ 新增：处理删除任务分解的方法
+    async def handle_delete_task_breakdowns(self, parsed_intent: ParsedIntent) -> str:
+        """处理删除任务分解"""
+        print(f"[DEBUG] 处理删除任务分解，实体: {parsed_intent.entities}")
+
+        original_text = parsed_intent.original_text.lower()
+
+        # 检查是否要删除特定的任务分解
+        task_titles = await self._extract_task_title_from_text(original_text)
+
+        if task_titles:
+            # 删除特定的任务分解
+            deleted_count = 0
+            for title in task_titles:
+                success = await self.calendar.delete_task_breakdown_by_title(title)
+                if success:
+                    deleted_count += 1
+
+            if deleted_count > 0:
+                return f"✅ 已成功删除 {deleted_count} 个相关的任务分解及其关联事件！"
+            else:
+                return "❌ 未找到匹配的任务分解。"
+        else:
+            # 删除所有任务分解
+            success = await self.calendar.delete_all_task_breakdowns()
+
+            if success:
+                return "✅ 已成功删除所有任务分解及其关联事件！"
+            else:
+                return "❌ 删除任务分解时出现错误，请重试。"
+
+    # 🗑️ 新增：从文本中提取任务标题
+    async def _extract_task_title_from_text(self, text: str) -> List[str]:
+        """从文本中提取任务标题"""
+        import re
+
+        # 匹配模式：删除"XXX"任务分解
+        patterns = [
+            r'删除[「"](.+?)[」"]的任务分解',
+            r'删除(.+?)的任务分解',
+            r'清除[「"](.+?)[」"]的任务分解',
+            r'清除(.+?)的任务分解'
+        ]
+
+        titles = []
+        for pattern in patterns:
+            matches = re.findall(pattern, text)
+            titles.extend(matches)
+
+        return titles
+
+    # 🗑️ 新增：列出所有任务分解的方法（可选，用于帮助用户选择要删除的任务）
+    async def list_task_breakdowns(self) -> str:
+        """列出所有任务分解"""
+        try:
+            task_breakdowns = await self.calendar.get_all_task_breakdowns()
+
+            if not task_breakdowns:
+                return "当前没有任务分解计划。"
+
+            result = "📋 当前的任务分解计划：\n\n"
+            for i, breakdown in enumerate(task_breakdowns, 1):
+                result += f"{i}. {breakdown.title}\n"
+                result += f"   ⏱️ 总时长: {breakdown.total_hours} 小时\n"
+                result += f"   📅 截止: {breakdown.deadline.strftime('%m月%d日')}\n"
+                result += f"   🗂️ 分解块数: {len(breakdown.chunks)}\n"
+                result += f"   🆔 ID: {breakdown.id[:8]}...\n\n"
+
+            result += "💡 您可以说 '删除所有任务分解' 或 '删除\"任务标题\"的任务分解' 来删除特定的任务分解。"
+            return result
+        except Exception as e:
+            print(f"[ERROR] 列出任务分解失败: {e}")
+            return "❌ 获取任务分解列表失败，请重试。"
 
 
 # 🏋️ 新增：训练计划生成器

@@ -44,6 +44,10 @@ class IntentType(Enum):
     # 🏋️ 新增训练计划相关意图
     CREATE_WORKOUT_PLAN = "create_workout_plan"
     DELETE_WORKOUT_PLANS = "delete_workout_plans"
+    # 🎯 新增：任务分解意图
+    BREAKDOWN_TASK = "breakdown_task"
+    # 🗑️ 新增：删除任务分解意图
+    DELETE_TASK_BREAKDOWNS = "delete_task_breakdowns"
 
 @dataclass
 class ParsedIntent:
@@ -93,4 +97,59 @@ class WorkoutPlan:
             'workouts': self.workouts,
             'created_at': self.created_at.isoformat(),
             'start_date': self.start_date.isoformat()
+        }
+
+# 添加任务分解相关数据模型
+# 修复 TaskBreakdown 类的 __post_init__ 方法
+@dataclass
+class TaskBreakdown:
+    id: str
+    title: str
+    total_hours: float
+    deadline: datetime
+    chunks: List[Dict]  # 分解后的任务块
+    created_at: datetime
+
+    def __post_init__(self):
+        """确保字段类型正确 - 修复版本"""
+        # 🛠️ 修复：改进 datetime 解析
+        def parse_datetime(dt_str):
+            if isinstance(dt_str, datetime):
+                return dt_str
+            try:
+                if hasattr(datetime, 'fromisoformat'):
+                    return datetime.fromisoformat(dt_str)
+                else:
+                    # 备用解析方法
+                    for fmt in ['%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+                        try:
+                            return datetime.strptime(dt_str, fmt)
+                        except:
+                            continue
+                    return datetime.now()
+            except:
+                return datetime.now()
+
+        # 如果 deadline 是字符串，转换为 datetime
+        if isinstance(self.deadline, str):
+            self.deadline = parse_datetime(self.deadline)
+
+        # 如果 created_at 是字符串，转换为 datetime
+        if isinstance(self.created_at, str):
+            self.created_at = parse_datetime(self.created_at)
+
+        # 🛠️ 修复：确保 chunks 中的时间字符串被正确解析
+        if self.chunks:
+            for chunk in self.chunks:
+                if 'start_time' in chunk and isinstance(chunk['start_time'], str):
+                    chunk['start_time'] = parse_datetime(chunk['start_time'])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'total_hours': self.total_hours,
+            'deadline': self.deadline.isoformat(),
+            'chunks': self.chunks,
+            'created_at': self.created_at.isoformat()
         }

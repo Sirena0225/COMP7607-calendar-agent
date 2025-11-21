@@ -1,3 +1,4 @@
+
 import json
 import os
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -23,10 +24,21 @@ app.add_middleware(
 )
 
 
+# 谷歌日历配置（原有函数保留）
+def setup_google_calendar():
+    config_file = 'google-calendar-api.json'
+    if os.path.exists(config_file):
+        print(f"✓ 找到Google Calendar配置文件: {os.path.abspath(config_file)}")
+    else:
+        print(f"⚠ 未找到配置文件: {config_file}")
+    os.environ['GOOGLE_CALENDAR_CREDENTIALS_FILE'] = os.path.abspath(config_file)
+
+
 # 挂载静态文件目录（存放前端HTML/CSS/JS）
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 初始化日历组件
+setup_google_calendar()
 calendar_db = SQLiteCalendar()
 agent = CalendarAgent(calendar_interface=calendar_db)
 
@@ -232,6 +244,68 @@ async def delete_all_workout_plans():
             "success": success,
             "events_deleted": events_deleted,
             "message": f"删除了 {events_deleted} 个训练事件"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 在 main.py 中添加任务分解API端点
+
+@app.get("/api/task-breakdowns")
+async def get_task_breakdowns():
+    """获取所有任务分解"""
+    try:
+        task_breakdowns = await calendar_db.get_task_breakdowns()
+        return {
+            "task_breakdowns": [breakdown.to_dict() for breakdown in task_breakdowns]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/task-breakdowns")
+async def delete_all_task_breakdowns():
+    """删除所有任务分解"""
+    try:
+        success = await calendar_db.delete_task_breakdowns()
+        return {
+            "success": success,
+            "message": "所有任务分解已删除"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 在 main.py 中添加删除任务分解的 API 端点
+@app.delete("/api/task-breakdowns")
+async def delete_all_task_breakdowns():
+    """删除所有任务分解"""
+    try:
+        success = await calendar_db.delete_all_task_breakdowns()
+        return {
+            "success": success,
+            "message": "所有任务分解已删除"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/task-breakdowns/{title}")
+async def delete_task_breakdown_by_title(title: str):
+    """根据标题删除任务分解"""
+    try:
+        success = await calendar_db.delete_task_breakdown_by_title(title)
+        return {
+            "success": success,
+            "message": f"标题包含 '{title}' 的任务分解已删除"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/task-breakdowns")
+async def get_all_task_breakdowns():
+    """获取所有任务分解"""
+    try:
+        task_breakdowns = await calendar_db.get_all_task_breakdowns()
+        return {
+            "task_breakdowns": [breakdown.to_dict() for breakdown in task_breakdowns]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
