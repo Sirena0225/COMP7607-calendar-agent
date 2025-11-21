@@ -580,7 +580,16 @@
                 <span>自然语言 → 结构化日程的智能 Agent 演示</span>
             </div>
         </div>
-        <div class="header-right" id="headerDate"></div>
+        <div class="header-right" id="headerRight">
+            <span id="headerDate"></span>
+            <span style="margin:0 8px; color:#ccc;">|</span>
+
+            <!-- Language Switch -->
+            <span id="langZh" style="cursor:pointer; font-size:0.85rem; font-weight:500;">中文</span>
+            <span style="margin: 0 4px;">/</span>
+            <span id="langEn" style="cursor:pointer; font-size:0.85rem; font-weight:500;">English</span>
+        </div>
+
     </header>
 
     <!-- Chat 区域 -->
@@ -668,6 +677,164 @@
     </section>
 
     <script>
+        // ====== 国际化语言管理 ======
+        let currentLang = localStorage.getItem("lang") || "zh";
+
+        // UI 文案
+        const i18n = {
+            badgeNLP: { zh: "NLP 解析", en: "NLP Parsing" },
+            badgeCalendar: { zh: "日程生成", en: "Schedule Generation" },
+
+            headerTitle: { zh: "AI 日程管理助手", en: "AI Schedule Assistant" },
+            headerSub: { zh: "自然语言 → 结构化日程的智能 Agent 演示", en: "Natural Language → Structured Calendar AI Assistant" },
+
+            chatTitle: { zh: "对话区", en: "Chat Panel" },
+            chatSub: { zh: "用中文直接描述你的计划，Agent 会帮你生成日程", en: "Describe your plan, and the agent will generate schedules." },
+
+            send: { zh: "发送", en: "Send" },
+
+            monthView: { zh: "月视图", en: "Month" },
+            dayView: { zh: "仅看当天日程", en: "Day View" },
+
+            prevMonth: { zh: "← 上个月", en: "← Prev" },
+            nextMonth: { zh: "下个月 →", en: "Next →" },
+            today: { zh: "回到今天", en: "Today" },
+
+            aiThinking: { zh: "助手正在思考", en: "Assistant is thinking" },
+
+            // quick actions
+            quick1: { zh: "明天下午三点和张三开会", en: "Meeting with John at 3 PM tomorrow" },
+            quick2: { zh: "期末复习时间", en: "Exam review time" },
+            quick3: { zh: "查找空闲时间", en: "Find available times" },
+
+            // placeholder
+            inputPlaceholder: {
+                zh: "例如：帮我安排明天上午开个项目进度会…",
+                en: "Example: Schedule a project meeting tomorrow morning…"
+            },
+
+            // 在右侧日视图的无事件提示
+            noEventsToday: {
+                zh: "今天还没有安排，可以在左侧用自然语言创建一个日程。",
+                en: "No events today. You can create one from the chat panel."
+            },
+
+            // 星期
+            weekday: {
+                zh: ["日","一","二","三","四","五","六"],
+                en: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
+            },
+
+            // 欢迎语
+            welcome: {
+                zh:
+        `你好，我是你的日程管理助手。
+
+        你可以用自然语言描述计划，比如：
+        - “帮我安排明天下午三点和张三开会”
+        - “下周一到周五每天晚上七点提醒我复习机器学习”
+
+        我会解析并写入右侧日历，方便你在展示时说明整个 Agent 流程。`,
+                en:
+        `Hello, I'm your schedule assistant.
+
+        You can describe your plans in natural language, for example:
+        - “Schedule a meeting with John at 3 PM tomorrow”
+        - “Remind me to study machine learning every evening next week”
+
+        I'll parse your instructions and write events into the calendar.`
+            },
+
+            // 聊天时间 meta 标签文本
+            metaUser: { zh: "你 · ", en: "You · " },
+            metaAgent: { zh: "助手 · ", en: "AI · " },
+
+            // agent 轻翻译
+            agentMap: {
+                "事件已成功添加": "Event added successfully",
+                "事件已成功修改": "Event modified successfully",
+                "事件已成功删除": "Event deleted successfully",
+                "当前时间范围内没有事件": "No events in this time range",
+                "今天还没有安排": "No events today",
+                "明天没有安排事件": "No events tomorrow",
+                "操作已取消": "Operation cancelled"
+            }
+        };
+
+
+        function applyLanguage() {
+            const t = i18n;
+            
+            // Badges
+            const badges = document.querySelectorAll(".badge");
+            badges[0].textContent = i18n.badgeNLP[currentLang];
+            badges[1].textContent = i18n.badgeCalendar[currentLang];
+
+
+            // Header
+            document.querySelector(".header-title h1").textContent = t.headerTitle[currentLang];
+            document.querySelector(".header-title span").textContent = t.headerSub[currentLang];
+
+            // Chat title
+            document.querySelector(".chat-header-title span:first-child").textContent = t.chatTitle[currentLang];
+            document.querySelector(".chat-header-title span:last-child").textContent = t.chatSub[currentLang];
+
+            // Send button
+            document.querySelector("#sendBtn span").textContent = t.send[currentLang];
+
+            // Quick actions
+            const chips = document.querySelectorAll(".chip");
+            chips[0].textContent = t.quick1[currentLang];
+            chips[1].textContent = t.quick2[currentLang];
+            chips[2].textContent = t.quick3[currentLang];
+
+            // Placeholder
+            document.getElementById("userInput").placeholder = t.inputPlaceholder[currentLang];
+
+            // Nav buttons
+            const nav = document.querySelectorAll(".nav-button");
+            nav[0].textContent = t.prevMonth[currentLang];
+            nav[1].textContent = t.nextMonth[currentLang];
+            nav[2].textContent = t.today[currentLang];
+
+            document.getElementById("monthViewBtn").textContent = t.monthView[currentLang];
+            document.getElementById("dayViewBtn").textContent = t.dayView[currentLang];
+
+            // Typing indicator
+            document.querySelector("#typingIndicator span").textContent = t.aiThinking[currentLang];
+
+            // Weekday headers
+            document.querySelectorAll(".weekday").forEach((el, i) => {
+                el.textContent = t.weekday[currentLang][i];
+            });
+
+            // Re-render date locale
+            initHeaderDate();
+        }
+
+
+        // 切换语言
+        function setLanguage(lang) {
+            currentLang = lang;
+            localStorage.setItem("lang", lang);
+
+            applyLanguage();
+
+            // 🔥 强制刷新月视图（用于顶部月份、星期文字等）
+            renderMonthView();
+
+            // 🔥 强制刷新日视图（用于“今日安排”、星期、无事件提示）
+            renderDayView(selectedDate);
+
+            // 🔥 重新渲染欢迎语（英文切换依赖）
+            const chatMessages = document.getElementById('chatMessages');
+            chatMessages.innerHTML = "";
+            appendMessage('agent', i18n.welcome[currentLang], false);
+        }
+
+
+
+        
         // ====== 全局状态 ======
         let currentView = 'month';
         let currentMonth = new Date();
@@ -679,22 +846,35 @@
             initChatArea();
             renderMonthView();
             renderDayView(selectedDate);
+            document.getElementById("langZh").onclick = () => setLanguage("zh");
+            document.getElementById("langEn").onclick = () => setLanguage("en");
+
+            // 初次渲染
+            applyLanguage();
+
         };
 
         function initHeaderDate() {
             const headerDate = document.getElementById('headerDate');
             const now = new Date();
-            const weekdayMap = ['周日','周一','周二','周三','周四','周五','周六'];
-            headerDate.textContent =
-                `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 · ${weekdayMap[now.getDay()]}`;
+
+            const zhWeek = ['周日','周一','周二','周三','周四','周五','周六'];
+            const enWeek = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+            if (currentLang === "zh") {
+                headerDate.textContent =
+                    `${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日 · ${zhWeek[now.getDay()]}`;
+            } else {
+                headerDate.textContent =
+                    `${now.toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric'})} · ${enWeek[now.getDay()]}`;
+            }
         }
+
 
         function initChatArea() {
             const chatMessages = document.getElementById('chatMessages');
-            appendMessage('agent',
-                '你好，我是你的日程管理助手。\n\n你可以用自然语言描述计划，比如：\n- “帮我安排明天下午三点和张三开会”\n- “下周一到周五每天晚上七点提醒我复习机器学习”\n\n我会解析并写入右侧日历，方便你在展示时说明整个 Agent 流程。',
-                false
-            );
+            appendMessage('agent', i18n.welcome[currentLang], false);
+
 
             const input = document.getElementById('userInput');
             input.addEventListener('keydown', function (e) {
@@ -831,7 +1011,7 @@
                 const response = await fetch('/api/message', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: message })
+                    body: JSON.stringify({ message: message, lang: currentLang })
                 });
 
                 if (!response.ok) {
@@ -839,7 +1019,17 @@
                 }
                 const data = await response.json();
                 hideTyping();
-                appendMessage('agent', data.response || '（后端未返回 response 字段）', true);
+                let agentText = data.response || "（后端未返回 response 字段）";
+
+                if (currentLang === "en") {
+                    // lightweight translation
+                    for (const zh in i18n.agentMap) {
+                        agentText = agentText.replace(zh, i18n.agentMap[zh]);
+                    }
+                }
+
+                appendMessage('agent', agentText, true);
+
 
                 // 刷新当前视图（方便演示：Agent 一旦创建了事件，右侧立刻更新）
                 setTimeout(() => {
@@ -886,7 +1076,14 @@
         function renderMonthView() {
             const year = currentMonth.getFullYear();
             const month = currentMonth.getMonth();
-            document.getElementById('currentDate').textContent = `${year}年${month + 1}月`;
+            if (currentLang === "zh") {
+                document.getElementById('currentDate').textContent = `${year}年${month + 1}月`;
+            } else {
+                const dateObj = new Date(year, month, 1);
+                document.getElementById('currentDate').textContent =
+                    dateObj.toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+            }
+
 
             const monthView = document.getElementById('monthView');
             // 保留前 7 个星期标题
@@ -1018,22 +1215,35 @@
             const month = date.getMonth() + 1;
             const day = date.getDate();
 
-            const weekdayMap = ['周日','周一','周二','周三','周四','周五','周六'];
+            const zhWeek = ['周日','周一','周二','周三','周四','周五','周六'];
+            const enWeek = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
             const dayViewTitle = document.getElementById('dayViewTitle');
             const dayViewSub = document.getElementById('dayViewSubTitle');
             const eventsList = document.getElementById('dayEventsList');
 
-            dayViewTitle.textContent = `${year}年${month}月${day}日的日程`;
-            dayViewSub.textContent = weekdayMap[date.getDay()];
-            eventsList.innerHTML = '<div class="loading">加载中…</div>';
+            // 🔥 根据语言切换标题
+            if (currentLang === "zh") {
+                dayViewTitle.textContent = `${year}年${month}月${day}日的日程`;
+                dayViewSub.textContent = zhWeek[date.getDay()];
+            } else {
+                const dateStr = date.toLocaleDateString('en-US', {
+                    year: 'numeric', month: 'long', day: 'numeric'
+                });
+                dayViewTitle.textContent = `Schedule for ${dateStr}`;
+                dayViewSub.textContent = enWeek[date.getDay()];
+            }
 
-            const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            eventsList.innerHTML = 
+                `<div class="loading">${currentLang === "zh" ? "加载中…" : "Loading…"}</div>`;
+
+            const requestDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
             try {
                 const response = await fetch('/api/day-schedule', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ date: dateStr })
+                    body: JSON.stringify({ date: requestDate })
                 });
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
@@ -1042,35 +1252,50 @@
                 const events = data.events || [];
                 eventsList.innerHTML = '';
 
+                // 🔥 无事件 — 支持中英文
                 if (events.length === 0) {
                     eventsList.innerHTML =
-                        '<div class="loading" style="color:#9ca3af;">今天还没有安排，可以在左侧用自然语言创建一个日程。</div>';
+                        `<div class="loading" style="color:#9ca3af;">
+                            ${currentLang === "zh" 
+                                ? "今天还没有安排，可以在左侧用自然语言创建一个日程。" 
+                                : "No events today. You can create one from the chat panel."
+                            }
+                        </div>`;
                     return;
                 }
 
+                // 排序
                 events.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
 
+                // 渲染事件
                 events.forEach(event => {
                     const start = new Date(event.start_time);
                     const end = new Date(event.end_time);
+
                     const timeStr =
-                        `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')} - ` +
-                        `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`;
+                        `${String(start.getHours()).padStart(2,'0')}:${String(start.getMinutes()).padStart(2,'0')} - ` +
+                        `${String(end.getHours()).padStart(2,'0')}:${String(end.getMinutes()).padStart(2,'0')}`;
 
                     const el = document.createElement('div');
                     el.className = 'day-event';
+
                     el.innerHTML = `
                         <div class="event-time">${timeStr}</div>
-                        <div class="event-title">${event.title || '未命名事件'}</div>
+                        <div class="event-title">${event.title || (currentLang === "zh" ? "未命名事件" : "Untitled event")}</div>
                         ${event.location ? `<div class="event-location">📍 ${event.location}</div>` : ''}
                         ${event.description ? `<div class="event-description">${event.description}</div>` : ''}
                     `;
                     eventsList.appendChild(el);
                 });
+
             } catch (e) {
-                eventsList.innerHTML = `<div class="loading" style="color:var(--danger);">加载失败：${e.message}</div>`;
+                eventsList.innerHTML =
+                    `<div class="loading" style="color:var(--danger);">
+                        ${currentLang === "zh" ? "加载失败：" : "Failed to load: "} ${e.message}
+                    </div>`;
             }
         }
+
     </script>
 </body>
 </html>
