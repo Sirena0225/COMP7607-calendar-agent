@@ -114,12 +114,57 @@ class CalendarAgent:
                     )
                     return await self.handle_cancel_action(cancel_intent)
 
+            # 优先处理任务分解的多轮对话（避免被事件选择编号打断）
+            if self._is_in_task_breakdown_conversation():
+                # 直接构造临时 ParsedIntent 并进入任务分解流程
+                temp_intent = ParsedIntent(
+                    intent_type=IntentType.BREAKDOWN_TASK,
+                    entities={'raw_text': user_input},
+                    confidence=1.0,
+                    original_text=user_input
+                )
+                return await self._continue_task_breakdown_conversation(temp_intent)
+
+            # 🛠️ 新增：如果用户仅输入数字且上下文中有可选事件列表，视为选择确认（避免被NL解析误导）
+            if user_input.strip().isdigit() and 'available_events' in self.conversation_context:
+                parsed_intent = ParsedIntent(
+                    intent_type=IntentType.CONFIRM_ACTION,
+                    entities={'selection_index': int(user_input.strip())},
+                    confidence=1.0,
+                    original_text=user_input
+                )
+                print(f"[DEBUG] 用户输入数字且存在可选事件，强制意图: CONFIRM_ACTION, 选择: {parsed_intent.entities['selection_index']}")
+            else:
+                # 优先启用简单触发词规则：若用户明确表示删除/移除，直接走删除意图，避免被误判为添加
+                del_keywords = ['删除', '移除', '删掉', '清除', '取消安排', '取消这个安排']
+                if any(kw in user_input for kw in del_keywords):
+                    parsed_intent = ParsedIntent(
+                        intent_type=IntentType.DELETE_EVENT,
+                        entities={},
+                        confidence=1.0,
+                        original_text=user_input
+                    )
+                    print(f"[DEBUG] 命中删除关键词，强制意图: DELETE_EVENT")
+                else:
+                    parsed_intent = self.nlp_parser.parse(user_input)
+
             # 🏋️ 修复：首先检查是否在训练计划对话中
             if self._is_in_workout_plan_conversation():
                 print(f"[DEBUG] 在训练计划对话中，直接继续对话")
                 return await self._continue_workout_plan_conversation_directly(user_input)
 
-            parsed_intent = self.nlp_parser.parse(user_input)
+            # 优先启用简单触发词规则：若用户明确表示删除/移除，直接走删除意图，避免被误判为添加
+            del_keywords = ['删除', '移除', '删掉', '清除', '取消安排', '取消这个安排']
+            if any(kw in user_input for kw in del_keywords):
+                parsed_intent = ParsedIntent(
+                    intent_type=IntentType.DELETE_EVENT,
+                    entities={},
+                    confidence=1.0,
+                    original_text=user_input
+                )
+                print(f"[DEBUG] 命中删除关键词，强制意图: DELETE_EVENT")
+            else:
+                parsed_intent = self.nlp_parser.parse(user_input)
 
             print(f"[DEBUG] 意图类型: {parsed_intent.intent_type.value}")
             print(f"[DEBUG] 实体信息: {parsed_intent.entities}")
@@ -658,6 +703,11 @@ class CalendarAgent:
         print(f"[DEBUG] 处理确认操作")
 
         original_text = parsed_intent.original_text.strip()
+
+        # 优先处理任务分解对话，避免数字或确认被误导到删除/修改选择流程
+        if self._is_in_task_breakdown_conversation():
+            return await self._continue_task_breakdown_conversation(parsed_intent)
+
 
         # 🛠️ 修复：首先处理任务分解确认 - 放在最前面
         if 'pending_task_breakdown' in self.conversation_context:
@@ -1420,18 +1470,17 @@ class CalendarAgent:
         return ''
 
     def _extract_datetime_from_text(self, text: str):
-        """从文本中提取日期时间 - 添加调试信息"""
+        """从文本中提取日期时间 - 支持 '27号/27日' 和 'X月Y日' 格式，带时段默认小时处理"""
         import re
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, time, date
 
         text_lower = text.lower()
         print(f"[DEBUG] 从文本提取时间: {text}")
 
-        # 获取当前时间作为基准
         now = datetime.now()
         print(f"[DEBUG] 当前时间: {now}")
 
-        # 🛠️ 修复：添加中文数字到阿拉伯数字的映射
+        # 中文数字映射
         chinese_number_map = {
             '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
             '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
@@ -1440,71 +1489,128 @@ class CalendarAgent:
             '二十一': 21, '二十二': 22, '二十三': 23
         }
 
-        def parse_hour_from_text(time_str: str):
-            """从时间字符串中解析小时数"""
-            # 🛠️ 修复：匹配中文数字和阿拉伯数字
-            # 匹配模式：上午/下午/晚上 + 中文/阿拉伯数字 + 点/时
-            time_match = re.search(r'(上午|下午|晚上)?([一二三四五六七八九十\d]{1,3})[点时]半?', time_str)
-            if time_match:
-                period, hour_str = time_match.groups()
+        def parse_hour_from_text(s: str):
+            """从字符串解析小时和分钟，支持中文和阿拉伯数字与半点"""
+            m = re.search(r'(上午|下午|晚上)?\s*([一二三四五六七八九十\d]{1,3})\s*[点时]半?', s)
+            if not m:
+                # 尝试匹配HH:MM
+                m2 = re.search(r'(\d{1,2}):(\d{2})', s)
+                if m2:
+                    return int(m2.group(1)), int(m2.group(2))
+                return None, None
+            period, hour_str = m.groups()
+            if hour_str in chinese_number_map:
+                hour = chinese_number_map[hour_str]
+            else:
+                try:
+                    hour = int(hour_str)
+                except:
+                    return None, None
+            minute = 30 if '半' in s else 0
 
-                # 🛠️ 修复：处理中文数字
-                if hour_str in chinese_number_map:
-                    hour = chinese_number_map[hour_str]
-                else:
-                    # 如果是阿拉伯数字，直接转换
-                    try:
-                        hour = int(hour_str)
-                    except:
-                        return None, None
+            if period == '下午' and hour < 12:
+                hour += 12
+            if period == '晚上' and hour < 12:
+                hour += 12
+            if period == '上午' and hour == 12:
+                hour = 0
+            return hour, minute
 
-                minute = 0
-                # 🛠️ 修复：检查是否有"半"表示30分钟
-                if '半' in time_str:
-                    minute = 30
+        # 1) 识别 "X月Y日/号"
+        md = re.search(r'(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?', text_lower)
+        if md:
+            month = int(md.group(1))
+            day = int(md.group(2))
+            year = now.year
+            # 如果指定的月日已过则视为下一年
+            try:
+                if month < now.month or (month == now.month and day < now.day):
+                    year += 1
+                base_date = date(year, month, day)
+            except:
+                base_date = (now + timedelta(days=1)).date()
 
-                print(f"[DEBUG] 时间解析结果: 时段={period}, 小时={hour}, 分钟={minute}")
+            hour, minute = parse_hour_from_text(text_lower)
+            if hour is not None:
+                start = datetime.combine(base_date, time(hour=hour, minute=minute))
+                return start, start + timedelta(hours=1)
+            # 根据时段关键词给出默认小时
+            if '下午' in text_lower:
+                start = datetime.combine(base_date, time(hour=15, minute=0))
+                return start, start + timedelta(hours=1)
+            if '上午' in text_lower:
+                start = datetime.combine(base_date, time(hour=9, minute=0))
+                return start, start + timedelta(hours=1)
+            if '晚上' in text_lower:
+                start = datetime.combine(base_date, time(hour=19, minute=0))
+                return start, start + timedelta(hours=1)
+            # 无时段默认上午9点
+            start = datetime.combine(base_date, time(hour=9, minute=0))
+            return start, start + timedelta(hours=1)
 
-                # 处理12小时制转换
-                if period == '下午' and hour < 12:
-                    hour += 12
-                elif period == '晚上' and hour < 12:
-                    hour += 12
-                elif period == '上午' and hour == 12:
-                    hour = 0
-                # 🛠️ 修复：如果没有指定时段，但小时数较小，默认为下午
-                elif not period and hour < 8:
-                    hour += 12
+        # 2) 识别 "Y号/Y日"（无月）
+        day_only = re.search(r'(?<!\d)(\d{1,2})\s*[日号](?!\d)', text_lower)
+        if day_only:
+            day = int(day_only.group(1))
+            month = now.month
+            year = now.year
+            # 如果日已过，推到下个月（考虑年末）
+            if day < now.day:
+                month += 1
+                if month > 12:
+                    month = 1
+                    year += 1
+            try:
+                base_date = date(year, month, day)
+            except:
+                base_date = (now + timedelta(days=1)).date()
 
-                return hour, minute
-            return None, None
+            hour, minute = parse_hour_from_text(text_lower)
+            if hour is not None:
+                start = datetime.combine(base_date, time(hour=hour, minute=minute))
+                return start, start + timedelta(hours=1)
+            if '下午' in text_lower:
+                start = datetime.combine(base_date, time(hour=15, minute=0))
+                return start, start + timedelta(hours=1)
+            if '上午' in text_lower:
+                start = datetime.combine(base_date, time(hour=9, minute=0))
+                return start, start + timedelta(hours=1)
+            if '晚上' in text_lower:
+                start = datetime.combine(base_date, time(hour=19, minute=0))
+                return start, start + timedelta(hours=1)
+            # 若只有日期且无时段，返回该日的上午默认时间
+            start = datetime.combine(base_date, time(hour=9, minute=0))
+            return start, start + timedelta(hours=1)
 
-        # 🛠️ 修复：处理"明天"的情况
+        # 3) 处理 "明天"/"今天"等
         if '明天' in text_lower:
             base_date = (now + timedelta(days=1)).date()
-            print(f"[DEBUG] 识别为明天，基准日期: {base_date}")
-
             hour, minute = parse_hour_from_text(text_lower)
             if hour is not None:
-                start_time = datetime.combine(base_date, now.time().replace(hour=hour, minute=minute, second=0))
-                print(f"[DEBUG] 生成开始时间: {start_time}")
-                return start_time, start_time + timedelta(hours=1)
+                start = datetime.combine(base_date, time(hour=hour, minute=minute))
+                return start, start + timedelta(hours=1)
+            if '下午' in text_lower:
+                start = datetime.combine(base_date, time(hour=15, minute=0))
+                return start, start + timedelta(hours=1)
+            if '上午' in text_lower:
+                start = datetime.combine(base_date, time(hour=9, minute=0))
+                return start, start + timedelta(hours=1)
+            return None, None
 
-        # 🛠️ 修复：处理"今天"的情况
-        elif '今天' in text_lower:
-            base_date = datetime.now().date()
+        if '今天' in text_lower:
+            base_date = now.date()
             hour, minute = parse_hour_from_text(text_lower)
             if hour is not None:
-                start_time = datetime.combine(base_date, datetime.min.time().replace(hour=hour, minute=minute))
-                return start_time, start_time + timedelta(hours=1)
+                start = datetime.combine(base_date, time(hour=hour, minute=minute))
+                return start, start + timedelta(hours=1)
+            return None, None
 
-        # 🛠️ 修复：处理没有日期的情况（默认今天）
-        else:
-            hour, minute = parse_hour_from_text(text_lower)
-            if hour is not None:
-                base_date = datetime.now().date()
-                start_time = datetime.combine(base_date, datetime.min.time().replace(hour=hour, minute=minute))
-                return start_time, start_time + timedelta(hours=1)
+        # 4) 仅有时间（默认今天）
+        hour, minute = parse_hour_from_text(text_lower)
+        if hour is not None:
+            base_date = now.date()
+            start = datetime.combine(base_date, time(hour=hour, minute=minute))
+            return start, start + timedelta(hours=1)
 
         return None, None
 
@@ -2003,42 +2109,105 @@ class CalendarAgent:
         return ('task_breakdown_stage' in self.conversation_context and
                 self.conversation_context['task_breakdown_stage'] not in ['completed', 'confirmation'])
 
+# ...existing code...
     async def _continue_task_breakdown_conversation(self, parsed_intent: ParsedIntent) -> str:
-        """继续任务分解的多轮对话"""
-        stage = self.conversation_context['task_breakdown_stage']
-        task_info = self.conversation_context['task_info']
+        """继续任务分解的多轮对话（修复：支持 collecting_hours 和 collecting_deadline）"""
+        stage = self.conversation_context.get('task_breakdown_stage')
+        task_info = self.conversation_context.get('task_info', {})
         text = parsed_intent.original_text.strip()
 
         print(f"[DEBUG] 任务分解对话阶段: {stage}, 输入: {text}")
 
+        # 阶段：初始信息收集（旧逻辑保留）
         if stage == 'collecting_info':
-            # 收集缺失的信息
+            # 收集缺失的信息：title -> hours -> deadline
             if 'title' not in task_info or not task_info['title']:
                 task_info['title'] = text
                 self.conversation_context['task_breakdown_stage'] = 'collecting_hours'
                 return "✅ 已记录任务名称。请问这个任务需要多少小时完成？"
 
             elif 'total_hours' not in task_info or not task_info['total_hours']:
+                # 尝试解析小时数
                 try:
-                    hours = float(text)
+                    hours = float(re.search(r'(\d+(?:\.\d+)?)', text).group(1))
                     if hours <= 0:
                         return "❌ 小时数必须大于0，请重新输入："
                     task_info['total_hours'] = hours
                     self.conversation_context['task_breakdown_stage'] = 'collecting_deadline'
                     return "✅ 已记录所需小时数。请问截止日期是什么时候？（例如：12月25号）"
-                except ValueError:
-                    return "❌ 请输入有效的小时数，例如：5 或 3.5"
+                except Exception:
+                    # 若未能直接解析数字，转到 collecting_hours 以便专门处理
+                    self.conversation_context['task_breakdown_stage'] = 'collecting_hours'
+                    return "请告诉我这个任务大概需要多少小时完成（例如：5 或 3.5）？"
 
             elif 'deadline' not in task_info or not task_info['deadline']:
-                # 尝试解析截止日期
                 deadline = self._extract_deadline_from_text(text)
                 if deadline:
                     task_info['deadline'] = deadline
                     return await self._generate_task_breakdown(task_info)
                 else:
+                    # 引导用户输入明确日期格式
+                    self.conversation_context['task_breakdown_stage'] = 'collecting_deadline'
                     return "❌ 无法识别截止日期，请重新输入，例如：12月25号 或 下周五"
 
+        # 新增阶段：专门收集小时数（更健壮）
+        elif stage == 'collecting_hours':
+            # 尝试解析数字（支持阿拉伯数字）
+            try:
+                m = re.search(r'(\d+(?:\.\d+)?)', text)
+                if m:
+                    hours = float(m.group(1))
+                    if hours <= 0:
+                        return "❌ 小时数必须大于0，请重新输入："
+                    task_info['total_hours'] = hours
+                    self.conversation_context['task_breakdown_stage'] = 'collecting_deadline'
+                    return "✅ 已记录所需小时数。请问截止日期是什么时候？（例如：12月25号）"
+                else:
+                    return "❌ 未识别到小时数，请输入数字，例如：5 或 3.5"
+            except Exception:
+                return "❌ 解析小时数时出错，请输入数字，例如：5 或 3.5"
+
+        # 新增阶段：专门收集截止日期（支持多种格式和回退）
+        elif stage == 'collecting_deadline':
+            # 优先使用已有的解析器
+            deadline = self._extract_deadline_from_text(text)
+            if deadline:
+                task_info['deadline'] = deadline
+                return await self._generate_task_breakdown(task_info)
+
+            # 回退：尝试更宽松的日期解析（匹配 "11月28号/11月28日/11-28/11/28" 等）
+            try:
+                # 1) 匹配 "X月Y号/日"
+                m = re.search(r'(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?', text)
+                if m:
+                    month = int(m.group(1))
+                    day = int(m.group(2))
+                    now = datetime.now()
+                    year = now.year
+                    if month < now.month or (month == now.month and day < now.day):
+                        year += 1
+                    task_info['deadline'] = datetime(year, month, day, 23, 59, 59)
+                    return await self._generate_task_breakdown(task_info)
+
+                # 2) 匹配 "MM-DD" 或 "MM/DD"
+                m2 = re.search(r'(\d{1,2})[\/\-](\d{1,2})', text)
+                if m2:
+                    month = int(m2.group(1))
+                    day = int(m2.group(2))
+                    now = datetime.now()
+                    year = now.year
+                    if month < now.month or (month == now.month and day < now.day):
+                        year += 1
+                    task_info['deadline'] = datetime(year, month, day, 23, 59, 59)
+                    return await self._generate_task_breakdown(task_info)
+            except Exception as e:
+                print(f"[DEBUG] 截止日期回退解析失败: {e}")
+
+            return "❌ 无法识别截止日期，请重新输入，例如：11月28号、12月25号或'下周五'。"
+
+        # 其它情况：回退提示
         return "❌ 任务分解流程出现错误，请重新开始。"
+# ...existing code...
 
     def _extract_task_info_from_entities(self, entities: dict, original_text: str) -> dict:
         """从实体中提取任务信息"""
