@@ -67,6 +67,7 @@ class QwenClient:
         - help: 帮助
         - create_workout_plan: 创建训练计划（当用户提到训练、健身、锻炼、增肌、减脂等）
         - delete_workout_plans: 删除训练计划（当用户提到删除训练、清除健身计划等）
+        - breakdown_task: 任务分解（当用户提到任务分解、分配空余时间、截止日期前完成等）
 
         请严格按照以下JSON格式返回结果，不要添加其他内容：
         {
@@ -77,6 +78,8 @@ class QwenClient:
                 "end_time": "结束时间(ISO格式，如果知道的话)", 
                 "location": "地点",
                 "description": "描述"
+                "total_hours": "所需小时数",
+                "deadline": "截止日期"
             },
             "confidence": 0.0-1.0,
             "explanation": "分析说明"
